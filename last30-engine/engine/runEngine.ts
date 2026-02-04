@@ -37,7 +37,7 @@ const RUN_ID_HASH_LENGTH = 10;
 let sanityChecksCompleted = false;
 
 /** Execute the simplified research pipeline. */
-export function runEngine(options: RunOptions): RunResponse {
+export async function runEngine(options: RunOptions): Promise<RunResponse> {
   runEngineSanityChecks();
   const windowDays = options.window_days ?? DEFAULT_WINDOW;
   const target = options.target ?? DEFAULT_TARGET;
@@ -45,10 +45,15 @@ export function runEngine(options: RunOptions): RunResponse {
   const requestedSources = options.sources ?? ["reddit", "web", "hn"];
   const allowT4 = options.allow_t4 ?? DEFAULT_ALLOW_T4;
   const runDate = getRunDate();
+  const limit = options.top_n ?? DEFAULT_TOP_N;
 
   const runId = buildRunId(options, runDate, requestedSources);
 
-  const collected = collectSources(options.query, requestedSources);
+  const { items: collected, flags: collectorFlags, perSourceCounts } = await collectSources(
+    options.query,
+    requestedSources,
+    limit
+  );
   const windowFiltered = collected.filter((item) => isWithinWindow(item.published_at, windowDays));
   const timestamped = windowFiltered.map((item) => ({
     ...item,
@@ -65,7 +70,7 @@ export function runEngine(options: RunOptions): RunResponse {
     return acc;
   }, {});
 
-  const flags = buildFlags(collected.length, windowFiltered.length);
+  const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), collectorFlags);
   const integrityScore = calculateIntegrityScore(windowFiltered.length, collected.length, flags.length);
 
   const contextBlockText = buildContextBlock({
@@ -90,7 +95,8 @@ export function runEngine(options: RunOptions): RunResponse {
     {
       collected: collected.length,
       kept: policyKept.length,
-      excluded_t4: excludedT4
+      excluded_t4: excludedT4,
+      per_source_counts: perSourceCounts
     },
     timestampTierCounts
   );
@@ -113,8 +119,13 @@ export function runEngine(options: RunOptions): RunResponse {
   };
 }
 
-function collectSources(query: string, sources: string[]): CollectedItem[] {
+async function collectSources(
+  query: string,
+  sources: string[],
+  limit: number
+): Promise<{ items: CollectedItem[]; flags: string[]; perSourceCounts: Record<string, number> }> {
   const results: CollectedItem[] = [];
+  const flags: string[] = [];
   if (sources.includes("reddit")) {
     results.push(...redditCollector(query));
   }
@@ -122,9 +133,18 @@ function collectSources(query: string, sources: string[]): CollectedItem[] {
     results.push(...webCollector(query));
   }
   if (sources.includes("hn")) {
-    results.push(...hnCollector(query));
+    try {
+      const hnResults = await hnCollector(query, limit);
+      results.push(...hnResults);
+    } catch (error) {
+      flags.push("HN_FETCH_FAILED");
+    }
   }
-  return results;
+  return {
+    items: results,
+    flags,
+    perSourceCounts: countBySource(results)
+  };
 }
 
 function buildFlags(total: number, kept: number): string[] {
@@ -136,6 +156,10 @@ function buildFlags(total: number, kept: number): string[] {
     flags.push("window_filtered");
   }
   return flags;
+}
+
+function mergeFlags(base: string[], additional: string[]): string[] {
+  return Array.from(new Set([...base, ...additional]));
 }
 
 function calculateIntegrityScore(kept: number, total: number, flagsCount: number): number {
@@ -155,7 +179,12 @@ function writeArtifacts(
   flags: string[],
   runDate: string,
   allowT4: boolean,
-  counts: { collected: number; kept: number; excluded_t4: number },
+  counts: {
+    collected: number;
+    kept: number;
+    excluded_t4: number;
+    per_source_counts: Record<string, number>;
+  },
   timestampTierCounts: Record<string, number>
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
@@ -267,6 +296,13 @@ function buildRunFolder(runDate: string, query: string): string {
 function countTimestampTiers(items: Array<{ timestamp_tier: string }>): Record<string, number> {
   return items.reduce<Record<string, number>>((acc, item) => {
     acc[item.timestamp_tier] = (acc[item.timestamp_tier] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function countBySource(items: Array<{ source: string }>): Record<string, number> {
+  return items.reduce<Record<string, number>>((acc, item) => {
+    acc[item.source] = (acc[item.source] ?? 0) + 1;
     return acc;
   }, {});
 }
