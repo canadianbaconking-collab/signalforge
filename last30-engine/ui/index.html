@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SignalForge</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 900px;
+        margin: 40px auto;
+        padding: 0 16px;
+        color: #1f2937;
+      }
+      h1 {
+        margin-bottom: 8px;
+      }
+      .panel {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        padding: 16px;
+        margin-bottom: 16px;
+        background: #f9fafb;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-top: 12px;
+      }
+      input, select, textarea {
+        width: 100%;
+        padding: 10px;
+        margin-top: 6px;
+        border-radius: 6px;
+        border: 1px solid #d1d5db;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      textarea {
+        min-height: 220px;
+        font-family: "Courier New", monospace;
+      }
+      button {
+        margin-top: 12px;
+        padding: 10px 16px;
+        border-radius: 6px;
+        border: none;
+        background: #2563eb;
+        color: white;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      button.secondary {
+        background: #4b5563;
+        margin-left: 8px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+      }
+      .row > div {
+        flex: 1;
+      }
+      .status {
+        margin-top: 8px;
+        font-size: 14px;
+        color: #374151;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SignalForge</h1>
+    <p>Local-first research microtool for developer + AI workflow signals.</p>
+
+    <div class="panel">
+      <label for="query">Research Query</label>
+      <input id="query" type="text" placeholder="e.g. AI code review workflows" />
+
+      <div class="row">
+        <div>
+          <label for="target">Target</label>
+          <select id="target">
+            <option value="gpt">GPT</option>
+            <option value="codex">Codex</option>
+          </select>
+        </div>
+        <div>
+          <label for="mode">Mode</label>
+          <select id="mode">
+            <option value="quick">Quick</option>
+            <option value="deep">Deep</option>
+          </select>
+        </div>
+      </div>
+
+      <button id="runButton">Run</button>
+      <button id="copyButton" class="secondary">Copy Context Block</button>
+      <div class="status" id="status"></div>
+    </div>
+
+    <div class="panel">
+      <label for="output">Context Block Output</label>
+      <textarea id="output" readonly></textarea>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
