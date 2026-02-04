@@ -4,6 +4,7 @@ import crypto from "crypto";
 import { redditCollector, CollectedItem } from "./collectors/redditCollector";
 import { webCollector } from "./collectors/webCollector";
 import { hnCollector } from "./collectors/hnCollector";
+import { githubCollector } from "./collectors/githubCollector";
 import { assignTimestampTier, isWithinWindow } from "./ranking/timestampTier";
 import { clusterItems } from "./ranking/clustering";
 import { scoreItems, ScoredItem } from "./ranking/scoring";
@@ -52,7 +53,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const { items: collected, flags: collectorFlags, perSourceCounts } = await collectSources(
     options.query,
     requestedSources,
-    limit
+    limit,
+    windowDays
   );
   const windowFiltered = collected.filter((item) => isWithinWindow(item.published_at, windowDays));
   const timestamped = windowFiltered.map((item) => ({
@@ -122,7 +124,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
 async function collectSources(
   query: string,
   sources: string[],
-  limit: number
+  limit: number,
+  windowDays: number
 ): Promise<{ items: CollectedItem[]; flags: string[]; perSourceCounts: Record<string, number> }> {
   const results: CollectedItem[] = [];
   const flags: string[] = [];
@@ -138,6 +141,19 @@ async function collectSources(
       results.push(...hnResults);
     } catch (error) {
       flags.push("HN_FETCH_FAILED");
+    }
+  }
+  if (sources.includes("github_issue") || sources.includes("github_release")) {
+    const githubSources = new Set(["github_issue", "github_release"]);
+    const githubFilter = (item: CollectedItem) => !githubSources.has(item.source) || sources.includes(item.source);
+    try {
+      const githubResult = await githubCollector(query, windowDays, limit);
+      results.push(...githubResult.items.filter(githubFilter));
+      if (githubResult.failed) {
+        flags.push("GITHUB_FETCH_FAILED");
+      }
+    } catch (error) {
+      flags.push("GITHUB_FETCH_FAILED");
     }
   }
   return {
