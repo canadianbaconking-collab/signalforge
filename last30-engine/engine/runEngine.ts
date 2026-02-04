@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { redditCollector } from "./collectors/redditCollector";
+import { RedditCollectorResult, redditCollector } from "./collectors/redditCollector";
 import { webCollector } from "./collectors/webCollector";
 import { hnCollector } from "./collectors/hnCollector";
 import { githubCollector } from "./collectors/githubCollector";
@@ -21,7 +21,16 @@ export type RunOptions = {
   top_n?: number;
   deterministic?: boolean;
   allow_t4?: boolean;
+  run_date?: string;
+  collectors?: CollectorOverrides;
 };
+
+export type CollectorOverrides = Partial<{
+  reddit: (query: string, windowDays: number, limit: number) => Promise<RedditCollectorResult>;
+  web: (query: string) => CollectedItem[];
+  hn: (query: string, limit: number) => Promise<CollectedItem[]>;
+  github: (query: string, windowDays: number, limit: number) => Promise<{ items: CollectedItem[]; failed: boolean }>;
+}>;
 
 export type RunResponse = {
   run_id: string;
@@ -46,7 +55,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const mode = options.mode ?? "quick";
   const requestedSources = options.sources ?? ["reddit", "web", "hn"];
   const allowT4 = options.allow_t4 ?? DEFAULT_ALLOW_T4;
-  const runDate = getRunDate();
+  const runDate = options.run_date ?? getRunDate();
   const limit = options.top_n ?? DEFAULT_TOP_N;
 
   const runId = buildRunId(options, runDate, requestedSources);
@@ -54,14 +63,14 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const {
     items: collected,
     flags: collectorFlags,
-    perSourceCounts,
     excludedMissingTimestamp,
     redditStrategyUsed
   } = await collectSources(
     options.query,
     requestedSources,
     limit,
-    windowDays
+    windowDays,
+    options.collectors
   );
   const windowFiltered = collected.filter((item) => isWithinWindow(item.published_at, windowDays));
   const timestamped = windowFiltered.map((item) => ({
@@ -70,6 +79,12 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   }));
   const timestampTierCounts = countTimestampTiers(timestamped);
   const { kept: policyKept, excludedT4 } = applyTimestampPolicy(timestamped, allowT4);
+  const perSourceCounts = countBySource(policyKept);
+  for (const source of requestedSources) {
+    if (perSourceCounts[source] === undefined) {
+      perSourceCounts[source] = 0;
+    }
+  }
 
   const clustered = clusterItems(policyKept);
   const scored = scoreItems(clustered).slice(0, options.top_n ?? DEFAULT_TOP_N);
@@ -134,11 +149,11 @@ async function collectSources(
   query: string,
   sources: string[],
   limit: number,
-  windowDays: number
+  windowDays: number,
+  collectors?: CollectorOverrides
 ): Promise<{
   items: CollectedItem[];
   flags: string[];
-  perSourceCounts: Record<string, number>;
   excludedMissingTimestamp: number;
   redditStrategyUsed: string | null;
 }> {
@@ -148,7 +163,7 @@ async function collectSources(
   let redditStrategyUsed: string | null = null;
   if (sources.includes("reddit")) {
     try {
-      const redditResult = await redditCollector(query, windowDays, limit);
+      const redditResult = await (collectors?.reddit ?? redditCollector)(query, windowDays, limit);
       results.push(...redditResult.items);
       excludedMissingTimestamp += redditResult.excluded_missing_timestamp;
       redditStrategyUsed = redditResult.strategy_used;
@@ -161,11 +176,11 @@ async function collectSources(
     }
   }
   if (sources.includes("web")) {
-    results.push(...webCollector(query));
+    results.push(...(collectors?.web ?? webCollector)(query));
   }
   if (sources.includes("hn")) {
     try {
-      const hnResults = await hnCollector(query, limit);
+      const hnResults = await (collectors?.hn ?? hnCollector)(query, limit);
       results.push(...hnResults);
     } catch (error) {
       flags.push("HN_FETCH_FAILED");
@@ -175,7 +190,7 @@ async function collectSources(
     const githubSources = new Set(["github_issue", "github_release"]);
     const githubFilter = (item: CollectedItem) => !githubSources.has(item.source) || sources.includes(item.source);
     try {
-      const githubResult = await githubCollector(query, windowDays, limit);
+      const githubResult = await (collectors?.github ?? githubCollector)(query, windowDays, limit);
       results.push(...githubResult.items.filter(githubFilter));
       if (githubResult.failed) {
         flags.push("GITHUB_FETCH_FAILED");
@@ -184,14 +199,9 @@ async function collectSources(
       flags.push("GITHUB_FETCH_FAILED");
     }
   }
-  const perSourceCounts = countBySource(results);
-  if (sources.includes("reddit") && perSourceCounts.reddit === undefined) {
-    perSourceCounts.reddit = 0;
-  }
   return {
     items: results,
     flags,
-    perSourceCounts,
     excludedMissingTimestamp,
     redditStrategyUsed
   };

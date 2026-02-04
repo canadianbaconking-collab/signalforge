@@ -23,6 +23,20 @@ npm run dev
 
 Open [http://localhost:8787](http://localhost:8787).
 
+## Smoke tests
+
+Offline smoke tests use deterministic stub collectors and do not require network access:
+
+```bash
+npm run smoke
+```
+
+To opt in to a live smoke check against Hacker News, set the environment variable:
+
+```bash
+SIGNALFORGE_LIVE_SMOKE=1 npm run smoke
+```
+
 ## Example curl request
 
 ```bash
