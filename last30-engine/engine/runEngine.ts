@@ -17,6 +17,8 @@ export type RunOptions = {
   mode?: "quick" | "deep";
   sources?: string[];
   top_n?: number;
+  deterministic?: boolean;
+  allow_t4?: boolean;
 };
 
 export type RunResponse = {
@@ -29,33 +31,42 @@ export type RunResponse = {
 
 const DEFAULT_WINDOW = 30;
 const DEFAULT_TARGET: "gpt" | "codex" = "gpt";
+const DEFAULT_TOP_N = 10;
+const DEFAULT_ALLOW_T4 = true;
+const RUN_ID_HASH_LENGTH = 10;
+let sanityChecksCompleted = false;
 
 /** Execute the simplified research pipeline. */
 export function runEngine(options: RunOptions): RunResponse {
+  runEngineSanityChecks();
   const windowDays = options.window_days ?? DEFAULT_WINDOW;
   const target = options.target ?? DEFAULT_TARGET;
   const mode = options.mode ?? "quick";
   const requestedSources = options.sources ?? ["reddit", "web", "hn"];
+  const allowT4 = options.allow_t4 ?? DEFAULT_ALLOW_T4;
+  const runDate = getRunDate();
 
-  const runId = `${new Date().toISOString().slice(0, 10)}-${slugify(options.query)}-${crypto.randomBytes(3).toString("hex")}`;
+  const runId = buildRunId(options, runDate, requestedSources);
 
   const collected = collectSources(options.query, requestedSources);
-  const filtered = collected.filter((item) => isWithinWindow(item.published_at, windowDays));
-  const timestamped = filtered.map((item) => ({
+  const windowFiltered = collected.filter((item) => isWithinWindow(item.published_at, windowDays));
+  const timestamped = windowFiltered.map((item) => ({
     ...item,
     timestamp_tier: assignTimestampTier(item.published_at).tier
   }));
+  const timestampTierCounts = countTimestampTiers(timestamped);
+  const { kept: policyKept, excludedT4 } = applyTimestampPolicy(timestamped, allowT4);
 
-  const clustered = clusterItems(timestamped);
-  const scored = scoreItems(clustered).slice(0, options.top_n ?? 10);
+  const clustered = clusterItems(policyKept);
+  const scored = scoreItems(clustered).slice(0, options.top_n ?? DEFAULT_TOP_N);
 
   const sourceCounts = clustered.reduce<Record<string, number>>((acc, item) => {
     acc[item.source] = (acc[item.source] ?? 0) + 1;
     return acc;
   }, {});
 
-  const flags = buildFlags(collected.length, filtered.length);
-  const integrityScore = calculateIntegrityScore(filtered.length, collected.length, flags.length);
+  const flags = buildFlags(collected.length, windowFiltered.length);
+  const integrityScore = calculateIntegrityScore(windowFiltered.length, collected.length, flags.length);
 
   const contextBlockText = buildContextBlock({
     query: options.query,
@@ -67,20 +78,36 @@ export function runEngine(options: RunOptions): RunResponse {
     topItems: scored
   });
 
-  const runFolder = writeArtifacts(runId, contextBlockText, scored, options, integrityScore, flags);
+  const runFolder = writeArtifacts(
+    runId,
+    contextBlockText,
+    scored,
+    options,
+    integrityScore,
+    flags,
+    runDate,
+    allowT4,
+    {
+      collected: collected.length,
+      kept: policyKept.length,
+      excluded_t4: excludedT4
+    },
+    timestampTierCounts
+  );
 
   persistRun(runId, options, windowDays, target, mode, integrityScore, flags, clustered);
 
+  const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
   return {
     run_id: runId,
     integrity_score: integrityScore,
     flags,
     artifacts: {
       run_folder: runFolder,
-      context_block: path.join(runFolder, "context_block.txt"),
-      summary: path.join(runFolder, "summary.md"),
-      sources: path.join(runFolder, "sources.json"),
-      run: path.join(runFolder, "run.json")
+      context_block: path.join(runFolder, `context_block_${runFileSuffix}.txt`),
+      summary: path.join(runFolder, `summary_${runFileSuffix}.md`),
+      sources: path.join(runFolder, `sources_${runFileSuffix}.json`),
+      run: path.join(runFolder, `run_${runFileSuffix}.json`)
     },
     context_block_text: contextBlockText
   };
@@ -125,25 +152,31 @@ function writeArtifacts(
   scored: ScoredItem[],
   options: RunOptions,
   integrityScore: number,
-  flags: string[]
+  flags: string[],
+  runDate: string,
+  allowT4: boolean,
+  counts: { collected: number; kept: number; excluded_t4: number },
+  timestampTierCounts: Record<string, number>
 ): string {
-  const datePath = new Date().toISOString().slice(0, 10);
-  const slug = slugify(options.query);
-  const runFolder = path.join(__dirname, "..", "runs", datePath, `${slug}-${runId.slice(-6)}`);
+  const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
+  const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
 
   const summary = `# SignalForge Run\n\nQuery: ${options.query}\nMode: ${options.mode ?? "quick"}\nTarget: ${options.target ?? DEFAULT_TARGET}\nIntegrity: ${integrityScore}/100\nFlags: ${flags.join(", ") || "none"}\n`;
 
-  fs.writeFileSync(path.join(runFolder, "context_block.txt"), contextBlockText, "utf8");
-  fs.writeFileSync(path.join(runFolder, "summary.md"), summary, "utf8");
-  fs.writeFileSync(path.join(runFolder, "sources.json"), JSON.stringify(scored, null, 2), "utf8");
+  fs.writeFileSync(path.join(runFolder, `context_block_${runFileSuffix}.txt`), contextBlockText, "utf8");
+  fs.writeFileSync(path.join(runFolder, `summary_${runFileSuffix}.md`), summary, "utf8");
+  fs.writeFileSync(path.join(runFolder, `sources_${runFileSuffix}.json`), JSON.stringify(scored, null, 2), "utf8");
   fs.writeFileSync(
-    path.join(runFolder, "run.json"),
+    path.join(runFolder, `run_${runFileSuffix}.json`),
     JSON.stringify({
       run_id: runId,
       options,
       integrity_score: integrityScore,
-      flags
+      flags,
+      allow_t4: allowT4,
+      counts,
+      timestamp_tier_counts: timestampTierCounts
     }, null, 2),
     "utf8"
   );
@@ -192,4 +225,101 @@ function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)+/g, "")
     .slice(0, 40) || "run";
+}
+
+function normalizeQuery(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function getRunDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function buildRunId(options: RunOptions, runDate: string, sources: string[]): string {
+  const normalizedQuery = normalizeQuery(options.query);
+  const windowDays = options.window_days ?? DEFAULT_WINDOW;
+  const target = options.target ?? DEFAULT_TARGET;
+  const mode = options.mode ?? "quick";
+  const topN = options.top_n ?? DEFAULT_TOP_N;
+  const normalizedSources = [...sources].map((source) => source.toLowerCase()).sort();
+  const deterministic = options.deterministic ?? true;
+  const nonce = deterministic ? "" : `|${crypto.randomUUID()}`;
+  const payload = JSON.stringify({
+    query: normalizedQuery,
+    window_days: windowDays,
+    target,
+    mode,
+    sources: normalizedSources,
+    top_n: topN,
+    run_date: runDate
+  });
+
+  const hash = crypto.createHash("sha256").update(`${payload}${nonce}`).digest("hex");
+  const slug = slugify(options.query);
+  return `${runDate}-${slug}-${hash.slice(0, RUN_ID_HASH_LENGTH)}`;
+}
+
+function buildRunFolder(runDate: string, query: string): string {
+  const slug = slugify(query);
+  return path.join(__dirname, "..", "runs", runDate, slug);
+}
+
+function countTimestampTiers(items: Array<{ timestamp_tier: string }>): Record<string, number> {
+  return items.reduce<Record<string, number>>((acc, item) => {
+    acc[item.timestamp_tier] = (acc[item.timestamp_tier] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function applyTimestampPolicy<T extends { timestamp_tier: string }>(
+  items: T[],
+  allowT4: boolean
+): { kept: T[]; excludedT4: number } {
+  if (allowT4) {
+    return { kept: items, excludedT4: 0 };
+  }
+
+  const kept = items.filter((item) => item.timestamp_tier !== "T4");
+  return { kept, excludedT4: items.length - kept.length };
+}
+
+function runEngineSanityChecks(): void {
+  if (sanityChecksCompleted) {
+    return;
+  }
+  sanityChecksCompleted = true;
+
+  const sampleOptions: RunOptions = {
+    query: "Example Query",
+    window_days: 7,
+    target: "gpt",
+    mode: "quick",
+    sources: ["web", "hn"],
+    top_n: 5
+  };
+  const runDate = "2024-01-02";
+  const runIdA = buildRunId(sampleOptions, runDate, sampleOptions.sources ?? []);
+  const runIdB = buildRunId(sampleOptions, runDate, sampleOptions.sources ?? []);
+  if (runIdA !== runIdB) {
+    throw new Error("Run ID deterministic check failed.");
+  }
+
+  const expectedFolder = buildRunFolder(runDate, sampleOptions.query);
+  const expectedFolderRepeat = buildRunFolder(runDate, sampleOptions.query);
+  const expectedSuffix = path.join("runs", runDate, slugify(sampleOptions.query));
+  if (expectedFolder !== expectedFolderRepeat) {
+    throw new Error("Run folder determinism check failed.");
+  }
+  if (!expectedFolder.endsWith(expectedSuffix)) {
+    throw new Error("Run folder path contract check failed.");
+  }
+
+  const sampleItems = [
+    { timestamp_tier: "T1", title: "valid" },
+    { timestamp_tier: "T4", title: "missing" }
+  ];
+  const { kept, excludedT4 } = applyTimestampPolicy(sampleItems, false);
+  if (kept.some((item) => item.timestamp_tier === "T4") || excludedT4 !== 1) {
+    throw new Error("Timestamp policy check failed.");
+  }
 }

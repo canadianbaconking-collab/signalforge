@@ -3,13 +3,15 @@ import { runEngine } from "../engine/runEngine";
 
 /** Handle POST /run to execute the research engine. */
 export function runRoute(req: Request, res: Response): void {
-  const { query, window_days, target, mode, sources, top_n } = req.body as {
+  const { query, window_days, target, mode, sources, top_n, deterministic, allow_t4 } = req.body as {
     query?: string;
     window_days?: number;
     target?: "gpt" | "codex";
     mode?: "quick" | "deep";
     sources?: string[];
     top_n?: number;
+    deterministic?: boolean;
+    allow_t4?: boolean;
   };
 
   if (!query || typeof query !== "string") {
@@ -23,7 +25,9 @@ export function runRoute(req: Request, res: Response): void {
     target,
     mode,
     sources,
-    top_n
+    top_n,
+    deterministic,
+    allow_t4
   });
 
   res.json(result);
