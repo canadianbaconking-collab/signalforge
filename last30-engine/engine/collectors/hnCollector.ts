@@ -1,4 +1,4 @@
-import { CollectedItem } from "./redditCollector";
+import { CollectedItem } from "./types";
 
 type HnHit = {
   objectID: string;

@@ -1,10 +1,11 @@
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import { redditCollector, CollectedItem } from "./collectors/redditCollector";
+import { redditCollector } from "./collectors/redditCollector";
 import { webCollector } from "./collectors/webCollector";
 import { hnCollector } from "./collectors/hnCollector";
 import { githubCollector } from "./collectors/githubCollector";
+import { CollectedItem } from "./collectors/types";
 import { assignTimestampTier, isWithinWindow } from "./ranking/timestampTier";
 import { clusterItems } from "./ranking/clustering";
 import { scoreItems, ScoredItem } from "./ranking/scoring";
@@ -50,7 +51,13 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
 
   const runId = buildRunId(options, runDate, requestedSources);
 
-  const { items: collected, flags: collectorFlags, perSourceCounts } = await collectSources(
+  const {
+    items: collected,
+    flags: collectorFlags,
+    perSourceCounts,
+    excludedMissingTimestamp,
+    redditStrategyUsed
+  } = await collectSources(
     options.query,
     requestedSources,
     limit,
@@ -98,9 +105,11 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       collected: collected.length,
       kept: policyKept.length,
       excluded_t4: excludedT4,
+      excluded_missing_timestamp: excludedMissingTimestamp,
       per_source_counts: perSourceCounts
     },
-    timestampTierCounts
+    timestampTierCounts,
+    redditStrategyUsed
   );
 
   persistRun(runId, options, windowDays, target, mode, integrityScore, flags, clustered);
@@ -126,11 +135,30 @@ async function collectSources(
   sources: string[],
   limit: number,
   windowDays: number
-): Promise<{ items: CollectedItem[]; flags: string[]; perSourceCounts: Record<string, number> }> {
+): Promise<{
+  items: CollectedItem[];
+  flags: string[];
+  perSourceCounts: Record<string, number>;
+  excludedMissingTimestamp: number;
+  redditStrategyUsed: string | null;
+}> {
   const results: CollectedItem[] = [];
   const flags: string[] = [];
+  let excludedMissingTimestamp = 0;
+  let redditStrategyUsed: string | null = null;
   if (sources.includes("reddit")) {
-    results.push(...redditCollector(query));
+    try {
+      const redditResult = await redditCollector(query, windowDays, limit);
+      results.push(...redditResult.items);
+      excludedMissingTimestamp += redditResult.excluded_missing_timestamp;
+      redditStrategyUsed = redditResult.strategy_used;
+      if (redditResult.failed) {
+        flags.push("REDDIT_FETCH_FAILED");
+      }
+    } catch (error) {
+      flags.push("REDDIT_FETCH_FAILED");
+      redditStrategyUsed = "reddit_json";
+    }
   }
   if (sources.includes("web")) {
     results.push(...webCollector(query));
@@ -156,10 +184,16 @@ async function collectSources(
       flags.push("GITHUB_FETCH_FAILED");
     }
   }
+  const perSourceCounts = countBySource(results);
+  if (sources.includes("reddit") && perSourceCounts.reddit === undefined) {
+    perSourceCounts.reddit = 0;
+  }
   return {
     items: results,
     flags,
-    perSourceCounts: countBySource(results)
+    perSourceCounts,
+    excludedMissingTimestamp,
+    redditStrategyUsed
   };
 }
 
@@ -199,9 +233,11 @@ function writeArtifacts(
     collected: number;
     kept: number;
     excluded_t4: number;
+    excluded_missing_timestamp: number;
     per_source_counts: Record<string, number>;
   },
-  timestampTierCounts: Record<string, number>
+  timestampTierCounts: Record<string, number>,
+  redditStrategyUsed: string | null
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
@@ -221,7 +257,10 @@ function writeArtifacts(
       flags,
       allow_t4: allowT4,
       counts,
-      timestamp_tier_counts: timestampTierCounts
+      timestamp_tier_counts: timestampTierCounts,
+      reddit: {
+        strategy_used: redditStrategyUsed
+      }
     }, null, 2),
     "utf8"
   );

@@ -1,4 +1,4 @@
-import { CollectedItem } from "./redditCollector";
+import { CollectedItem } from "./types";
 
 /** Mock web collector returning deterministic sample data. */
 export function webCollector(query: string): CollectedItem[] {

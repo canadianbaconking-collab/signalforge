@@ -1,4 +1,4 @@
-import { CollectedItem } from "./redditCollector";
+import { CollectedItem } from "./types";
 import { isWithinWindow } from "../ranking/timestampTier";
 
 const GITHUB_API_BASE = "https://api.github.com";
