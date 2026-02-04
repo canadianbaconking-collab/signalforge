@@ -1,4 +1,4 @@
-import { CollectedItem } from "../collectors/redditCollector";
+import { CollectedItem } from "../collectors/types";
 
 export type ScoredItem = CollectedItem & {
   score: number;

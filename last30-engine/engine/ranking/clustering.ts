@@ -1,5 +1,5 @@
 import crypto from "crypto";
-import { CollectedItem } from "../collectors/redditCollector";
+import { CollectedItem } from "../collectors/types";
 
 export type ClusteredItem = CollectedItem & {
   cluster_id: string;
