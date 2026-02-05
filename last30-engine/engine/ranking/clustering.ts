@@ -3,6 +3,7 @@ import { CollectedItem } from "../collectors/types";
 
 export type ClusteredItem = CollectedItem & {
   cluster_id: string;
+  timestamp_tier?: string;
 };
 
 /** Deduplicate identical URLs and assign cluster IDs. */

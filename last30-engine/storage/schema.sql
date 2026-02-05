@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS items (
   published_at TEXT,
   source TEXT NOT NULL,
   cluster_id TEXT NOT NULL,
+  idea_cluster_id TEXT,
+  evidence_grade TEXT,
+  origin_count INTEGER,
+  engagement INTEGER,
   timestamp_tier TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES runs(id)
 );

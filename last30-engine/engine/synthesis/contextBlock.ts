@@ -1,3 +1,4 @@
+import { BaselineItemRecord } from "../../storage/db";
 import { ScoredItem } from "../ranking/scoring";
 
 export type ContextBlockInput = {
@@ -8,6 +9,11 @@ export type ContextBlockInput = {
   flags: string[];
   target: "gpt" | "codex";
   topItems: ScoredItem[];
+  baselineSummary: Array<{
+    idea_cluster_id: string;
+    current_title: string;
+    baselines: BaselineItemRecord[];
+  }>;
 };
 
 /** Build the context block with a deterministic template. */
@@ -23,6 +29,15 @@ export function buildContextBlock(input: ContextBlockInput): string {
   });
 
   const prompt = `You are an expert research assistant. Expand on the top claims above. Provide concise bullet points with citations where possible.`;
+  const baselineLines = input.baselineSummary
+    .filter((entry) => entry.baselines.length > 0)
+    .slice(0, 6)
+    .map((entry) => {
+      const baselineText = entry.baselines
+        .map((baseline) => `${baseline.title} (${baseline.published_at.slice(0, 10)})`)
+        .join("; ");
+      return `- Now: ${entry.current_title} | Baseline: ${baselineText}`;
+    });
 
   return [
     "LAST30 RUN",
@@ -33,6 +48,9 @@ export function buildContextBlock(input: ContextBlockInput): string {
     "",
     "TOP CLAIMS (ranked)",
     claims.join("\n") || "1. No claims available",
+    "",
+    "WHAT CHANGED VS BASELINE",
+    baselineLines.length > 0 ? baselineLines.join("\n") : "None.",
     "",
     `PROMPT PACK FOR ${input.target.toUpperCase()}`,
     "PROMPT 1 — Research Expansion",
