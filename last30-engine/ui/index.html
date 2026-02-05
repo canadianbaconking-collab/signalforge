@@ -8,7 +8,7 @@
       body {
         font-family: Arial, sans-serif;
         max-width: 900px;
-        margin: 40px auto;
+        margin: 28px auto;
         padding: 0 16px;
         color: #1f2937;
       }
@@ -18,14 +18,48 @@
       .panel {
         border: 1px solid #e5e7eb;
         border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
+        padding: 14px;
+        margin-bottom: 14px;
         background: #f9fafb;
+      }
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px 12px;
+        font-size: 13px;
+      }
+      .status-item {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .status-item strong {
+        color: #111827;
+      }
+      .flags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .pill {
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: #e5e7eb;
+        font-size: 12px;
+      }
+      .warn {
+        margin-top: 8px;
+        color: #991b1b;
+        background: #fee2e2;
+        border: 1px solid #fecaca;
+        border-radius: 6px;
+        padding: 8px;
+        font-size: 13px;
       }
       label {
         display: block;
         font-weight: 600;
-        margin-top: 12px;
+        margin-top: 10px;
       }
       input, select, textarea {
         width: 100%;
@@ -39,6 +73,10 @@
       textarea {
         min-height: 220px;
         font-family: "Courier New", monospace;
+      }
+      #claimsPreview {
+        min-height: 120px;
+        max-height: 200px;
       }
       button {
         margin-top: 12px;
@@ -66,6 +104,24 @@
         font-size: 14px;
         color: #374151;
       }
+      .toast {
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        background: #111827;
+        color: #fff;
+        padding: 8px 12px;
+        border-radius: 6px;
+        font-size: 13px;
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+        pointer-events: none;
+      }
+      .toast.show {
+        opacity: 0.95;
+        transform: translateY(0);
+      }
     </style>
   </head>
   <body>
@@ -73,10 +129,31 @@
     <p>Local-first research microtool for developer + AI workflow signals.</p>
 
     <div class="panel">
+      <strong>Run Status</strong>
+      <div class="status-grid" style="margin-top: 8px">
+        <div class="status-item"><strong>Run:</strong> <span id="runIdShort">—</span></div>
+        <div class="status-item"><strong>Integrity:</strong> <span id="integrityScore">—</span></div>
+        <div class="status-item"><strong>Novelty:</strong> <span id="noveltyTelemetry">—</span></div>
+        <div class="status-item"><strong>Baseline:</strong> <span id="baselineTelemetry">—</span></div>
+      </div>
+      <div style="margin-top: 8px"><strong>Flags:</strong> <span class="flags" id="flags"></span></div>
+      <div class="warn" id="degradedWarning" style="display: none"></div>
+    </div>
+
+    <div class="panel">
       <label for="query">Research Query</label>
       <input id="query" type="text" placeholder="e.g. AI code review workflows" />
 
       <div class="row">
+        <div>
+          <label for="preset">Preset</label>
+          <select id="preset">
+            <option value="">Custom</option>
+            <option value="daily">Daily</option>
+            <option value="deep">Deep</option>
+            <option value="debug">Debug</option>
+          </select>
+        </div>
         <div>
           <label for="target">Target</label>
           <select id="target">
@@ -93,15 +170,35 @@
         </div>
       </div>
 
+      <div class="row">
+        <div>
+          <label for="windowDays">Window Days</label>
+          <input id="windowDays" type="number" min="1" value="30" />
+        </div>
+        <div>
+          <label for="sources">Sources (comma-separated)</label>
+          <input id="sources" type="text" value="reddit,hn,github_issue,github_release" />
+        </div>
+      </div>
+
       <button id="runButton">Run</button>
       <button id="copyButton" class="secondary">Copy Context Block</button>
+      <button id="copySummaryButton" class="secondary">Copy Summary</button>
+      <button id="copyPromptPackButton" class="secondary">Copy Prompt Pack</button>
       <div class="status" id="status"></div>
+    </div>
+
+    <div class="panel">
+      <label for="claimsPreview">Top Claims Preview</label>
+      <textarea id="claimsPreview" readonly></textarea>
     </div>
 
     <div class="panel">
       <label for="output">Context Block Output</label>
       <textarea id="output" readonly></textarea>
     </div>
+
+    <div id="toast" class="toast">Copied!</div>
 
     <script src="app.js"></script>
   </body>

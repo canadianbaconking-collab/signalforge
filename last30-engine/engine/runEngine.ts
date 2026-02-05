@@ -50,6 +50,15 @@ export type RunResponse = {
   flags: string[];
   artifacts: Record<string, string>;
   context_block_text: string;
+  run_telemetry: {
+    novelty: {
+      achieved_ratio: number;
+      novel_clusters_in_top: number;
+    };
+    baseline: {
+      clusters_with_baseline: number;
+    };
+  };
 };
 
 const DEFAULT_WINDOW = 30;
@@ -194,7 +203,16 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       sources: path.join(runFolder, `sources_${runFileSuffix}.json`),
       run: path.join(runFolder, `run_${runFileSuffix}.json`)
     },
-    context_block_text: contextBlockText
+    context_block_text: contextBlockText,
+    run_telemetry: {
+      novelty: {
+        achieved_ratio: noveltySelection.achievedRatio,
+        novel_clusters_in_top: noveltySelection.novelClustersInTop
+      },
+      baseline: {
+        clusters_with_baseline: baselineTelemetry.clusters_with_baseline
+      }
+    }
   };
 }
 
