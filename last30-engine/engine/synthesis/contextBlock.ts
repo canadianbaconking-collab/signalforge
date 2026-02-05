@@ -14,6 +14,11 @@ export type ContextBlockInput = {
     current_title: string;
     baselines: BaselineItemRecord[];
   }>;
+  newSignals: Array<{
+    title: string;
+    source: string;
+    published_at: string | null;
+  }>;
 };
 
 /** Build the context block with a deterministic template. */
@@ -30,6 +35,11 @@ export function buildContextBlock(input: ContextBlockInput): string {
   });
 
   const prompt = `You are an expert research assistant. Expand on the top claims above. Provide concise bullet points with citations where possible.`;
+
+  const newSignalLines = input.newSignals
+    .slice(0, 5)
+    .map((item) => `- ${item.title} (${item.source}, ${(item.published_at ?? "unknown").slice(0, 10)})`);
+
   const baselineLines = input.baselineSummary
     .filter((entry) => entry.baselines.length > 0)
     .slice(0, 6)
@@ -50,6 +60,9 @@ export function buildContextBlock(input: ContextBlockInput): string {
     "",
     "TOP CLAIMS (ranked)",
     claims.join("\n") || "1. No claims available",
+    "",
+    "NEW SIGNALS",
+    newSignalLines.length > 0 ? newSignalLines.join("\n") : "None.",
     "",
     "WHAT CHANGED VS BASELINE",
     baselineLines.length > 0 ? baselineLines.join("\n") : "None.",
