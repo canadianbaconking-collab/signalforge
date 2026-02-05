@@ -12,6 +12,7 @@ import { clusterIdeas, IdeaClusteredItem, IdeaClusterSummary } from "./ranking/i
 import { scoreItems, ScoredItem } from "./ranking/scoring";
 import { buildContextBlock } from "./synthesis/contextBlock";
 import { BaselineItemRecord, fetchBaselineItems, insertRun, ItemRecord, RunRecord } from "../storage/db";
+import { calculateIntegrityScore, IntegrityComponents } from "./integrity/integrityScore";
 
 export type RunOptions = {
   query: string;
@@ -83,6 +84,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   }));
   const timestampTierCounts = countTimestampTiers(timestamped);
   const { kept: policyKept, excludedT4 } = applyTimestampPolicy(timestamped, allowT4);
+  const integrityTimestampCounts = countTimestampTiers(policyKept);
   const perSourceCounts = countBySource(policyKept);
   for (const source of requestedSources) {
     if (perSourceCounts[source] === undefined) {
@@ -101,16 +103,29 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     return acc;
   }, {});
 
-  const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), collectorFlags);
-  const integrityScore = calculateIntegrityScore(windowFiltered.length, collected.length, flags.length);
   const ideaTelemetry = buildIdeaTelemetry(ideaClusters);
+  const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), collectorFlags);
+  const integrityResult = calculateIntegrityScore({
+    timestamp_tier_counts: integrityTimestampCounts,
+    flags,
+    kept: policyKept.length,
+    echo_risk_stats: ideaTelemetry.echo_risk_stats,
+    evidence_grade_counts: ideaTelemetry.evidence_grade_counts,
+    baseline: {
+      clusters_with_baseline: baselineTelemetry.clusters_with_baseline,
+      top_claim_clusters_count: ideaTelemetry.idea_cluster_count
+    }
+  });
+  const mergedFlags = mergeFlags(flags, integrityResult.flags);
+  const integrityScore = integrityResult.integrity_score;
+  const integrityComponents = integrityResult.components;
 
   const contextBlockText = buildContextBlock({
     query: options.query,
     windowDays,
     sourceCounts,
     integrityScore,
-    flags,
+    flags: mergedFlags,
     target,
     topItems: scored,
     baselineSummary
@@ -122,7 +137,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     scored,
     options,
     integrityScore,
-    flags,
+    mergedFlags,
     runDate,
     allowT4,
     {
@@ -136,16 +151,17 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     redditStrategyUsed,
     ideaTelemetry,
     baselineSummary,
-    baselineTelemetry
+    baselineTelemetry,
+    integrityComponents
   );
 
-  persistRun(runId, options, windowDays, target, mode, integrityScore, flags, ideaClustered);
+  persistRun(runId, options, windowDays, target, mode, integrityScore, mergedFlags, ideaClustered);
 
   const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
   return {
     run_id: runId,
     integrity_score: integrityScore,
-    flags,
+    flags: mergedFlags,
     artifacts: {
       run_folder: runFolder,
       context_block: path.join(runFolder, `context_block_${runFileSuffix}.txt`),
@@ -234,14 +250,6 @@ function mergeFlags(base: string[], additional: string[]): string[] {
   return Array.from(new Set([...base, ...additional]));
 }
 
-function calculateIntegrityScore(kept: number, total: number, flagsCount: number): number {
-  if (total === 0) {
-    return 0;
-  }
-  const base = Math.round((kept / total) * 100);
-  return Math.max(0, base - flagsCount * 5);
-}
-
 function writeArtifacts(
   runId: string,
   contextBlockText: string,
@@ -267,7 +275,8 @@ function writeArtifacts(
     evidence_grade_counts: Record<string, number>;
   },
   baselineSummary: BaselineSummaryEntry[],
-  baselineTelemetry: BaselineTelemetry
+  baselineTelemetry: BaselineTelemetry,
+  integrityComponents: IntegrityComponents
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
@@ -304,6 +313,9 @@ function writeArtifacts(
       echo_risk_stats: ideaTelemetry.echo_risk_stats,
       evidence_grade_counts: ideaTelemetry.evidence_grade_counts,
       baseline: baselineTelemetry,
+      integrity: {
+        components: integrityComponents
+      },
       reddit: {
         strategy_used: redditStrategyUsed
       }

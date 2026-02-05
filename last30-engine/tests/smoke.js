@@ -229,6 +229,86 @@ async function runOfflineSmoke() {
     failed: false
   });
 
+  const highEchoCollector = async () => ({
+    items: [
+      {
+        title: "Echo cluster event",
+        url: "https://echo.example.com/item-a",
+        snippet: "Echo cluster event details.",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Echo cluster event",
+        url: "https://echo.example.com/item-b",
+        snippet: "Echo cluster event details.",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Echo cluster event",
+        url: "https://echo.example.com/item-c",
+        snippet: "Echo cluster event details.",
+        published_at: recentIso,
+        source: "reddit"
+      }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
+  });
+
+  const lowVolumeCollector = async () => ({
+    items: [
+      {
+        title: "Low volume item A",
+        url: "https://low.example.com/item-a",
+        snippet: "Low volume item.",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Low volume item B",
+        url: "https://low.example.com/item-b",
+        snippet: "Low volume item.",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Low volume item C",
+        url: "https://low.example.com/item-c",
+        snippet: "Low volume item.",
+        published_at: recentIso,
+        source: "reddit"
+      }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
+  });
+
+  const t4Collector = async () => ({
+    items: [
+      {
+        title: "Timestamped item",
+        url: "https://timestamp.example.com/t1",
+        snippet: "Timestamped item.",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Missing timestamp item",
+        url: "https://timestamp.example.com/t4",
+        snippet: "Missing timestamp item.",
+        published_at: null,
+        source: "reddit"
+      }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 1
+  });
+
   const options = {
     query: "Smoke Test Query",
     window_days: 7,
@@ -257,6 +337,50 @@ async function runOfflineSmoke() {
 
   const resultA = await runEngine(options);
   const resultB = await runEngine(options);
+  const highEchoResult = await runEngine({
+    query: "High Echo Query",
+    window_days: 7,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: true,
+    run_date: fixedRunDate,
+    collectors: {
+      reddit: highEchoCollector
+    }
+  });
+  const lowVolumeResult = await runEngine({
+    query: "Low Volume Query",
+    window_days: 7,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: true,
+    run_date: fixedRunDate,
+    collectors: {
+      reddit: lowVolumeCollector
+    }
+  });
+  const allowT4Result = await runEngine({
+    query: "Allow T4 Query",
+    window_days: 7,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: true,
+    run_date: fixedRunDate,
+    collectors: {
+      reddit: t4Collector
+    }
+  });
+  const disallowT4Result = await runEngine({
+    query: "Disallow T4 Query",
+    window_days: 7,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: false,
+    run_date: fixedRunDate,
+    collectors: {
+      reddit: t4Collector
+    }
+  });
 
   Date.now = originalDateNow;
 
@@ -266,6 +390,10 @@ async function runOfflineSmoke() {
   const runData = readJson(resultA.artifacts.run);
   const summaryText = fs.readFileSync(resultA.artifacts.summary, "utf8");
   const contextBlockText = fs.readFileSync(resultA.artifacts.context_block, "utf8");
+  const highEchoRun = readJson(highEchoResult.artifacts.run);
+  const lowVolumeRun = readJson(lowVolumeResult.artifacts.run);
+  const allowT4Run = readJson(allowT4Result.artifacts.run);
+  const disallowT4Run = readJson(disallowT4Result.artifacts.run);
 
   const expectedRunFolderSuffix = path.join("runs", fixedRunDate, slugify(options.query));
   const sourceUrls = sources.map((item) => item.url);
@@ -386,6 +514,27 @@ async function runOfflineSmoke() {
         runData.baseline?.clusters_with_baseline >= 1 &&
         runData.baseline?.total_baseline_items_attached >= 1,
       "Telemetry: baseline metadata is populated"
+    ),
+    assertCondition(
+      typeof runData.integrity?.components?.timestamp === "number" &&
+        typeof runData.integrity?.components?.sources === "number" &&
+        typeof runData.integrity?.components?.independence === "number" &&
+        typeof runData.integrity?.components?.evidence === "number" &&
+        typeof runData.integrity?.components?.baseline === "number",
+      "Integrity: components are persisted in run.json"
+    ),
+    assertCondition(
+      highEchoResult.flags.includes("DEGRADED_SIGNAL_HIGH_ECHO_RISK") &&
+        highEchoRun.integrity.components.independence <= 8,
+      "Integrity: high echo risk run emits degraded flag and lowers independence score"
+    ),
+    assertCondition(
+      lowVolumeResult.flags.includes("DEGRADED_SIGNAL_LOW_VOLUME"),
+      "Integrity: low kept volume emits degraded low volume flag"
+    ),
+    assertCondition(
+      disallowT4Run.integrity.components.timestamp > allowT4Run.integrity.components.timestamp,
+      "Integrity: excluding T4 improves timestamp component"
     ),
     assertCondition(
       !sourceUrls.includes(baselineUrl),

@@ -22,6 +22,7 @@ export function buildContextBlock(input: ContextBlockInput): string {
     .map(([source, count]) => `${source}:${count}`)
     .join(", ");
   const flagsText = input.flags.length ? input.flags.join(", ") : "none";
+  const degradedSignal = input.flags.some((flag) => flag.startsWith("DEGRADED_SIGNAL_"));
 
   const claims = input.topItems.slice(0, 5).map((item, index) => {
     const echoRisk = Number.isFinite(item.echo_risk) ? item.echo_risk.toFixed(2) : "0.00";
@@ -45,6 +46,7 @@ export function buildContextBlock(input: ContextBlockInput): string {
     `Window: last ${input.windowDays} days`,
     `Sources: ${counts || "none"}`,
     `Integrity: ${input.integrityScore}/100   Flags: ${flagsText}`,
+    ...(degradedSignal ? ["Note: degraded signal — verify critical claims."] : []),
     "",
     "TOP CLAIMS (ranked)",
     claims.join("\n") || "1. No claims available",
