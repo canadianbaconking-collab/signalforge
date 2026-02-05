@@ -8,10 +8,10 @@ import { githubCollector } from "./collectors/githubCollector";
 import { CollectedItem } from "./collectors/types";
 import { assignTimestampTier, isWithinWindow } from "./ranking/timestampTier";
 import { clusterItems } from "./ranking/clustering";
-import { clusterIdeas, IdeaClusterSummary } from "./ranking/ideaClustering";
+import { clusterIdeas, IdeaClusteredItem, IdeaClusterSummary } from "./ranking/ideaClustering";
 import { scoreItems, ScoredItem } from "./ranking/scoring";
 import { buildContextBlock } from "./synthesis/contextBlock";
-import { insertRun, ItemRecord, RunRecord } from "../storage/db";
+import { BaselineItemRecord, fetchBaselineItems, insertRun, ItemRecord, RunRecord } from "../storage/db";
 
 export type RunOptions = {
   query: string;
@@ -23,6 +23,7 @@ export type RunOptions = {
   deterministic?: boolean;
   allow_t4?: boolean;
   run_date?: string;
+  baseline_lookback_days?: number;
   collectors?: CollectorOverrides;
 };
 
@@ -46,6 +47,7 @@ const DEFAULT_TARGET: "gpt" | "codex" = "gpt";
 const DEFAULT_TOP_N = 10;
 const DEFAULT_ALLOW_T4 = true;
 const RUN_ID_HASH_LENGTH = 10;
+const DEFAULT_BASELINE_LOOKBACK_DAYS = 180;
 let sanityChecksCompleted = false;
 
 /** Execute the simplified research pipeline. */
@@ -58,6 +60,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const allowT4 = options.allow_t4 ?? DEFAULT_ALLOW_T4;
   const runDate = options.run_date ?? getRunDate();
   const limit = options.top_n ?? DEFAULT_TOP_N;
+  const baselineLookbackDays = options.baseline_lookback_days ?? DEFAULT_BASELINE_LOOKBACK_DAYS;
 
   const runId = buildRunId(options, runDate, requestedSources);
 
@@ -90,6 +93,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const clustered = clusterItems(policyKept);
   const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered);
   const scored = scoreItems(ideaClustered).slice(0, options.top_n ?? DEFAULT_TOP_N);
+  const baselineSummary = buildBaselineSummary(scored, runDate, windowDays, baselineLookbackDays);
+  const baselineTelemetry = summarizeBaselineTelemetry(baselineSummary, baselineLookbackDays);
 
   const sourceCounts = ideaClustered.reduce<Record<string, number>>((acc, item) => {
     acc[item.source] = (acc[item.source] ?? 0) + 1;
@@ -107,7 +112,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     integrityScore,
     flags,
     target,
-    topItems: scored
+    topItems: scored,
+    baselineSummary
   });
 
   const runFolder = writeArtifacts(
@@ -128,10 +134,12 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     },
     timestampTierCounts,
     redditStrategyUsed,
-    ideaTelemetry
+    ideaTelemetry,
+    baselineSummary,
+    baselineTelemetry
   );
 
-  persistRun(runId, options, windowDays, target, mode, integrityScore, flags, clustered);
+  persistRun(runId, options, windowDays, target, mode, integrityScore, flags, ideaClustered);
 
   const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
   return {
@@ -257,13 +265,26 @@ function writeArtifacts(
     origin_count_stats: StatSummary;
     echo_risk_stats: StatSummary;
     evidence_grade_counts: Record<string, number>;
-  }
+  },
+  baselineSummary: BaselineSummaryEntry[],
+  baselineTelemetry: BaselineTelemetry
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
   const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
 
-  const summary = `# SignalForge Run\n\nQuery: ${options.query}\nMode: ${options.mode ?? "quick"}\nTarget: ${options.target ?? DEFAULT_TARGET}\nIntegrity: ${integrityScore}/100\nFlags: ${flags.join(", ") || "none"}\n`;
+  const summary = [
+    "# SignalForge Run",
+    "",
+    `Query: ${options.query}`,
+    `Mode: ${options.mode ?? "quick"}`,
+    `Target: ${options.target ?? DEFAULT_TARGET}`,
+    `Integrity: ${integrityScore}/100`,
+    `Flags: ${flags.join(", ") || "none"}`,
+    "",
+    "## WHAT CHANGED VS BASELINE",
+    formatBaselineSummary(baselineSummary)
+  ].join("\n");
 
   fs.writeFileSync(path.join(runFolder, `context_block_${runFileSuffix}.txt`), contextBlockText, "utf8");
   fs.writeFileSync(path.join(runFolder, `summary_${runFileSuffix}.md`), summary, "utf8");
@@ -282,6 +303,7 @@ function writeArtifacts(
       origin_count_stats: ideaTelemetry.origin_count_stats,
       echo_risk_stats: ideaTelemetry.echo_risk_stats,
       evidence_grade_counts: ideaTelemetry.evidence_grade_counts,
+      baseline: baselineTelemetry,
       reddit: {
         strategy_used: redditStrategyUsed
       }
@@ -300,7 +322,7 @@ function persistRun(
   mode: string,
   integrityScore: number,
   flags: string[],
-  items: Array<CollectedItem & { cluster_id: string; timestamp_tier: string }>
+  items: IdeaClusteredItem[]
 ): void {
   const runRecord: RunRecord = {
     id: runId,
@@ -321,7 +343,11 @@ function persistRun(
     published_at: item.published_at ?? null,
     source: item.source,
     cluster_id: item.cluster_id,
-    timestamp_tier: item.timestamp_tier
+    idea_cluster_id: item.idea_cluster_id,
+    evidence_grade: item.evidence_grade,
+    origin_count: item.origin_count,
+    engagement: null,
+    timestamp_tier: item.timestamp_tier ?? "T1"
   }));
 
   insertRun(runRecord, itemRecords);
@@ -377,6 +403,72 @@ function countTimestampTiers(items: Array<{ timestamp_tier: string }>): Record<s
     acc[item.timestamp_tier] = (acc[item.timestamp_tier] ?? 0) + 1;
     return acc;
   }, {});
+}
+
+type BaselineSummaryEntry = {
+  idea_cluster_id: string;
+  current_title: string;
+  baselines: BaselineItemRecord[];
+};
+
+type BaselineTelemetry = {
+  lookback_days: number;
+  clusters_with_baseline: number;
+  total_baseline_items_attached: number;
+};
+
+function buildBaselineSummary(
+  scored: ScoredItem[],
+  runDate: string,
+  windowDays: number,
+  lookbackDays: number
+): BaselineSummaryEntry[] {
+  const seenClusters = new Set<string>();
+  const summary: BaselineSummaryEntry[] = [];
+  for (const item of scored) {
+    if (seenClusters.has(item.idea_cluster_id)) {
+      continue;
+    }
+    seenClusters.add(item.idea_cluster_id);
+    const baselines = fetchBaselineItems(item.idea_cluster_id, runDate, windowDays, lookbackDays);
+    summary.push({
+      idea_cluster_id: item.idea_cluster_id,
+      current_title: item.title,
+      baselines
+    });
+  }
+  return summary;
+}
+
+function summarizeBaselineTelemetry(
+  summary: BaselineSummaryEntry[],
+  lookbackDays: number
+): BaselineTelemetry {
+  const clustersWithBaseline = summary.filter((entry) => entry.baselines.length > 0);
+  const totalBaselineItems = clustersWithBaseline.reduce((sum, entry) => sum + entry.baselines.length, 0);
+  return {
+    lookback_days: lookbackDays,
+    clusters_with_baseline: clustersWithBaseline.length,
+    total_baseline_items_attached: totalBaselineItems
+  };
+}
+
+function formatBaselineSummary(summary: BaselineSummaryEntry[]): string {
+  if (summary.length === 0) {
+    return "- No baseline found in cache";
+  }
+
+  return summary
+    .map((entry) => {
+      if (entry.baselines.length === 0) {
+        return "- No baseline found in cache";
+      }
+      const baselineText = entry.baselines
+        .map((baseline) => `${baseline.title} (${baseline.published_at.slice(0, 10)})`)
+        .join("; ");
+      return `- Now: ${entry.current_title} | Baseline: ${baselineText}`;
+    })
+    .join("\n");
 }
 
 function countBySource(items: Array<{ source: string }>): Record<string, number> {

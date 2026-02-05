@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
@@ -39,7 +40,34 @@ function loadRunEngine() {
   process.exit(1);
 }
 
+/**
+ * @returns {{ closeDb: import("../storage/db").closeDb }}
+ */
+function loadStorage() {
+  const distStorage = path.join(__dirname, "..", "dist", "storage", "db.js");
+  if (fs.existsSync(distStorage)) {
+    return require(distStorage);
+  }
+
+  const tsNodeRegister = path.join(
+    __dirname,
+    "..",
+    "node_modules",
+    "ts-node",
+    "register",
+    "transpile-only.js"
+  );
+  if (fs.existsSync(tsNodeRegister)) {
+    require(tsNodeRegister);
+    return require(path.join(__dirname, "..", "storage", "db.ts"));
+  }
+
+  console.error("Smoke runner could not locate compiled storage or ts-node register.");
+  process.exit(1);
+}
+
 const { runEngine } = loadRunEngine();
+const { closeDb } = loadStorage();
 
 function slugify(value) {
   return (
@@ -84,9 +112,13 @@ async function runOfflineSmoke() {
   const fixedRunDate = "2024-02-10";
   const originalDateNow = Date.now;
   Date.now = () => fixedNow.getTime();
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "signalforge-smoke-"));
+  const tempDbPath = path.join(tempDir, "signalforge.db");
+  process.env.SIGNALFORGE_DB_PATH = tempDbPath;
 
   const recentIso = new Date(fixedNow.getTime() - 2 * ONE_DAY_MS).toISOString();
   const oldIso = new Date(fixedNow.getTime() - 10 * ONE_DAY_MS).toISOString();
+  const baselineUrl = "https://baseline.example.com/cli-launch";
 
   const fakeRedditCollector = async () => ({
     items: [
@@ -136,6 +168,21 @@ async function runOfflineSmoke() {
     failed: false,
     strategy_used: "reddit_json",
     excluded_missing_timestamp: 1
+  });
+
+  const baselineCollector = async () => ({
+    items: [
+      {
+        title: "SignalForge CLI launch",
+        url: baselineUrl,
+        snippet: "SignalForge CLI launch",
+        published_at: oldIso,
+        source: "reddit"
+      }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
   });
 
   const fakeHnCollector = async () => [
@@ -196,6 +243,18 @@ async function runOfflineSmoke() {
     }
   };
 
+  await runEngine({
+    query: options.query,
+    window_days: 30,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: false,
+    run_date: "2024-02-01",
+    collectors: {
+      reddit: baselineCollector
+    }
+  });
+
   const resultA = await runEngine(options);
   const resultB = await runEngine(options);
 
@@ -205,6 +264,8 @@ async function runOfflineSmoke() {
   const runFiles = fs.readdirSync(runFolder);
   const sources = readJson(resultA.artifacts.sources);
   const runData = readJson(resultA.artifacts.run);
+  const summaryText = fs.readFileSync(resultA.artifacts.summary, "utf8");
+  const contextBlockText = fs.readFileSync(resultA.artifacts.context_block, "utf8");
 
   const expectedRunFolderSuffix = path.join("runs", fixedRunDate, slugify(options.query));
   const sourceUrls = sources.map((item) => item.url);
@@ -214,6 +275,7 @@ async function runOfflineSmoke() {
   const signalforgeItems = sources.filter((item) => item.title === "SignalForge CLI launch");
   const quantumItems = sources.filter((item) => item.title === "Quantum widget leak");
   const githubItem = sources.find((item) => item.source === "github_issue");
+  const baselineDate = oldIso.slice(0, 10);
 
   const checks = [
     assertCondition(resultA.run_id === resultB.run_id, "Determinism: run_id is stable"),
@@ -320,6 +382,26 @@ async function runOfflineSmoke() {
       "Telemetry: evidence_grade_counts map is populated"
     ),
     assertCondition(
+      runData.baseline?.lookback_days === 180 &&
+        runData.baseline?.clusters_with_baseline >= 1 &&
+        runData.baseline?.total_baseline_items_attached >= 1,
+      "Telemetry: baseline metadata is populated"
+    ),
+    assertCondition(
+      !sourceUrls.includes(baselineUrl),
+      "Baseline anchors: baseline items do not appear in top claims ranking"
+    ),
+    assertCondition(
+      summaryText.includes("WHAT CHANGED VS BASELINE") &&
+        summaryText.includes(`Baseline: SignalForge CLI launch (${baselineDate})`),
+      "Artifacts: summary includes baseline anchors"
+    ),
+    assertCondition(
+      contextBlockText.includes("WHAT CHANGED VS BASELINE") &&
+        contextBlockText.includes(`Baseline: SignalForge CLI launch (${baselineDate})`),
+      "Artifacts: context block includes baseline anchors"
+    ),
+    assertCondition(
       fs.existsSync(resultA.artifacts.context_block),
       "Artifact contract: context_block path exists"
     ),
@@ -328,7 +410,10 @@ async function runOfflineSmoke() {
     assertCondition(fs.existsSync(resultA.artifacts.summary), "Artifact contract: summary path exists")
   ];
 
-  return collectResults(checks);
+  const results = collectResults(checks);
+  closeDb();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+  return results;
 }
 
 async function runLiveSmoke() {
