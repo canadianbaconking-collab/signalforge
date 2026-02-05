@@ -7,7 +7,7 @@
     "dev": "ts-node-dev --respawn --transpile-only server/index.ts",
     "build": "tsc",
     "start": "node dist/server/index.js",
-    "smoke": "tsx tests/smoke.ts"
+    "smoke": "node tests/smoke.js"
   },
   "dependencies": {
     "better-sqlite3": "^9.4.3",
