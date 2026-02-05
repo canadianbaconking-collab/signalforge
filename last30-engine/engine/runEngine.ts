@@ -8,6 +8,7 @@ import { githubCollector } from "./collectors/githubCollector";
 import { CollectedItem } from "./collectors/types";
 import { assignTimestampTier, isWithinWindow } from "./ranking/timestampTier";
 import { clusterItems } from "./ranking/clustering";
+import { clusterIdeas, IdeaClusterSummary } from "./ranking/ideaClustering";
 import { scoreItems, ScoredItem } from "./ranking/scoring";
 import { buildContextBlock } from "./synthesis/contextBlock";
 import { insertRun, ItemRecord, RunRecord } from "../storage/db";
@@ -87,15 +88,17 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   }
 
   const clustered = clusterItems(policyKept);
-  const scored = scoreItems(clustered).slice(0, options.top_n ?? DEFAULT_TOP_N);
+  const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered);
+  const scored = scoreItems(ideaClustered).slice(0, options.top_n ?? DEFAULT_TOP_N);
 
-  const sourceCounts = clustered.reduce<Record<string, number>>((acc, item) => {
+  const sourceCounts = ideaClustered.reduce<Record<string, number>>((acc, item) => {
     acc[item.source] = (acc[item.source] ?? 0) + 1;
     return acc;
   }, {});
 
   const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), collectorFlags);
   const integrityScore = calculateIntegrityScore(windowFiltered.length, collected.length, flags.length);
+  const ideaTelemetry = buildIdeaTelemetry(ideaClusters);
 
   const contextBlockText = buildContextBlock({
     query: options.query,
@@ -124,7 +127,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       per_source_counts: perSourceCounts
     },
     timestampTierCounts,
-    redditStrategyUsed
+    redditStrategyUsed,
+    ideaTelemetry
   );
 
   persistRun(runId, options, windowDays, target, mode, integrityScore, flags, clustered);
@@ -247,7 +251,13 @@ function writeArtifacts(
     per_source_counts: Record<string, number>;
   },
   timestampTierCounts: Record<string, number>,
-  redditStrategyUsed: string | null
+  redditStrategyUsed: string | null,
+  ideaTelemetry: {
+    idea_cluster_count: number;
+    origin_count_stats: StatSummary;
+    echo_risk_stats: StatSummary;
+    evidence_grade_counts: Record<string, number>;
+  }
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
@@ -268,6 +278,10 @@ function writeArtifacts(
       allow_t4: allowT4,
       counts,
       timestamp_tier_counts: timestampTierCounts,
+      idea_cluster_count: ideaTelemetry.idea_cluster_count,
+      origin_count_stats: ideaTelemetry.origin_count_stats,
+      echo_risk_stats: ideaTelemetry.echo_risk_stats,
+      evidence_grade_counts: ideaTelemetry.evidence_grade_counts,
       reddit: {
         strategy_used: redditStrategyUsed
       }
@@ -372,6 +386,12 @@ function countBySource(items: Array<{ source: string }>): Record<string, number>
   }, {});
 }
 
+type StatSummary = {
+  min: number;
+  median: number;
+  max: number;
+};
+
 function applyTimestampPolicy<T extends { timestamp_tier: string }>(
   items: T[],
   allowT4: boolean
@@ -382,6 +402,42 @@ function applyTimestampPolicy<T extends { timestamp_tier: string }>(
 
   const kept = items.filter((item) => item.timestamp_tier !== "T4");
   return { kept, excludedT4: items.length - kept.length };
+}
+
+function buildIdeaTelemetry(clusters: IdeaClusterSummary[]): {
+  idea_cluster_count: number;
+  origin_count_stats: StatSummary;
+  echo_risk_stats: StatSummary;
+  evidence_grade_counts: Record<string, number>;
+} {
+  const originCounts = clusters.map((cluster) => cluster.origin_count);
+  const echoRisks = clusters.map((cluster) => cluster.echo_risk);
+  const evidenceGradeCounts = clusters.reduce<Record<string, number>>((acc, cluster) => {
+    acc[cluster.evidence_grade] = (acc[cluster.evidence_grade] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  return {
+    idea_cluster_count: clusters.length,
+    origin_count_stats: buildStats(originCounts),
+    echo_risk_stats: buildStats(echoRisks),
+    evidence_grade_counts: evidenceGradeCounts
+  };
+}
+
+function buildStats(values: number[]): StatSummary {
+  if (values.length === 0) {
+    return { min: 0, median: 0, max: 0 };
+  }
+
+  const sorted = [...values].sort((a, b) => a - b);
+  const min = sorted[0];
+  const max = sorted[sorted.length - 1];
+  const mid = Math.floor(sorted.length / 2);
+  const median =
+    sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+
+  return { min, median, max };
 }
 
 function runEngineSanityChecks(): void {
