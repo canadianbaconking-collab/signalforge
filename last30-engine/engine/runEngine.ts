@@ -11,7 +11,14 @@ import { clusterItems } from "./ranking/clustering";
 import { clusterIdeas, IdeaClusteredItem, IdeaClusterSummary } from "./ranking/ideaClustering";
 import { scoreItems, ScoredItem } from "./ranking/scoring";
 import { buildContextBlock } from "./synthesis/contextBlock";
-import { BaselineItemRecord, fetchBaselineItems, insertRun, ItemRecord, RunRecord } from "../storage/db";
+import {
+  BaselineItemRecord,
+  fetchBaselineItems,
+  getClusterHistory,
+  insertRun,
+  ItemRecord,
+  RunRecord
+} from "../storage/db";
 import { calculateIntegrityScore, IntegrityComponents } from "./integrity/integrityScore";
 
 export type RunOptions = {
@@ -25,6 +32,8 @@ export type RunOptions = {
   allow_t4?: boolean;
   run_date?: string;
   baseline_lookback_days?: number;
+  novelty_window_days?: number;
+  novelty_target_ratio?: number;
   collectors?: CollectorOverrides;
 };
 
@@ -49,6 +58,8 @@ const DEFAULT_TOP_N = 10;
 const DEFAULT_ALLOW_T4 = true;
 const RUN_ID_HASH_LENGTH = 10;
 const DEFAULT_BASELINE_LOOKBACK_DAYS = 180;
+const DEFAULT_NOVELTY_WINDOW_DAYS = 30;
+const DEFAULT_NOVELTY_TARGET_RATIO = 0.25;
 let sanityChecksCompleted = false;
 
 /** Execute the simplified research pipeline. */
@@ -94,8 +105,12 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
 
   const clustered = clusterItems(policyKept);
   const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered);
-  const scored = scoreItems(ideaClustered).slice(0, options.top_n ?? DEFAULT_TOP_N);
-  const baselineSummary = buildBaselineSummary(scored, runDate, windowDays, baselineLookbackDays);
+  const noveltyWindowDays = options.novelty_window_days ?? DEFAULT_NOVELTY_WINDOW_DAYS;
+  const noveltyTargetRatio = options.novelty_target_ratio ?? DEFAULT_NOVELTY_TARGET_RATIO;
+  const scored = scoreItems(ideaClustered);
+  const scoredWithNovelty = annotateNovelty(scored, runDate, noveltyWindowDays);
+  const noveltySelection = selectTopClaimsWithNoveltyQuota(scoredWithNovelty, limit, noveltyTargetRatio);
+  const baselineSummary = buildBaselineSummary(noveltySelection.selectedTopClaims, runDate, windowDays, baselineLookbackDays);
   const baselineTelemetry = summarizeBaselineTelemetry(baselineSummary, baselineLookbackDays);
 
   const sourceCounts = ideaClustered.reduce<Record<string, number>>((acc, item) => {
@@ -116,7 +131,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       top_claim_clusters_count: ideaTelemetry.idea_cluster_count
     }
   });
-  const mergedFlags = mergeFlags(flags, integrityResult.flags);
+  const mergedFlags = mergeFlags(mergeFlags(flags, integrityResult.flags), noveltySelection.quotaUnmet ? ["NOVELTY_QUOTA_UNMET"] : []);
   const integrityScore = integrityResult.integrity_score;
   const integrityComponents = integrityResult.components;
 
@@ -127,14 +142,16 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     integrityScore,
     flags: mergedFlags,
     target,
-    topItems: scored,
-    baselineSummary
+    topItems: noveltySelection.selectedTopClaims,
+    baselineSummary,
+    newSignals: noveltySelection.selectedTopClaims.filter((item) => item.novel).slice(0, 5)
   });
 
   const runFolder = writeArtifacts(
     runId,
     contextBlockText,
-    scored,
+    scoredWithNovelty.slice(0, limit),
+    noveltySelection.selectedTopClaims,
     options,
     integrityScore,
     mergedFlags,
@@ -152,7 +169,15 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     ideaTelemetry,
     baselineSummary,
     baselineTelemetry,
-    integrityComponents
+    integrityComponents,
+    {
+      novelty_window_days: noveltyWindowDays,
+      target_ratio: noveltyTargetRatio,
+      achieved_ratio: noveltySelection.achievedRatio,
+      novel_clusters_in_top: noveltySelection.novelClustersInTop,
+      total_clusters: noveltySelection.totalClusters,
+      quota_unmet: noveltySelection.quotaUnmet
+    }
   );
 
   persistRun(runId, options, windowDays, target, mode, integrityScore, mergedFlags, ideaClustered);
@@ -253,7 +278,8 @@ function mergeFlags(base: string[], additional: string[]): string[] {
 function writeArtifacts(
   runId: string,
   contextBlockText: string,
-  scored: ScoredItem[],
+  artifactItems: NoveltyAnnotatedItem[],
+  topClaims: NoveltyAnnotatedItem[],
   options: RunOptions,
   integrityScore: number,
   flags: string[],
@@ -276,12 +302,21 @@ function writeArtifacts(
   },
   baselineSummary: BaselineSummaryEntry[],
   baselineTelemetry: BaselineTelemetry,
-  integrityComponents: IntegrityComponents
+  integrityComponents: IntegrityComponents,
+  noveltyTelemetry: {
+    novelty_window_days: number;
+    target_ratio: number;
+    achieved_ratio: number;
+    novel_clusters_in_top: number;
+    total_clusters: number;
+    quota_unmet: boolean;
+  }
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
   const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
 
+  const newSignals = topClaims.filter((item) => item.novel).slice(0, 5);
   const summary = [
     "# SignalForge Run",
     "",
@@ -291,13 +326,16 @@ function writeArtifacts(
     `Integrity: ${integrityScore}/100`,
     `Flags: ${flags.join(", ") || "none"}`,
     "",
+    "## NEW SIGNALS",
+    formatNewSignals(newSignals),
+    "",
     "## WHAT CHANGED VS BASELINE",
     formatBaselineSummary(baselineSummary)
   ].join("\n");
 
   fs.writeFileSync(path.join(runFolder, `context_block_${runFileSuffix}.txt`), contextBlockText, "utf8");
   fs.writeFileSync(path.join(runFolder, `summary_${runFileSuffix}.md`), summary, "utf8");
-  fs.writeFileSync(path.join(runFolder, `sources_${runFileSuffix}.json`), JSON.stringify(scored, null, 2), "utf8");
+  fs.writeFileSync(path.join(runFolder, `sources_${runFileSuffix}.json`), JSON.stringify(artifactItems, null, 2), "utf8");
   fs.writeFileSync(
     path.join(runFolder, `run_${runFileSuffix}.json`),
     JSON.stringify({
@@ -316,6 +354,7 @@ function writeArtifacts(
       integrity: {
         components: integrityComponents
       },
+      novelty: noveltyTelemetry,
       reddit: {
         strategy_used: redditStrategyUsed
       }
@@ -430,7 +469,7 @@ type BaselineTelemetry = {
 };
 
 function buildBaselineSummary(
-  scored: ScoredItem[],
+  scored: NoveltyAnnotatedItem[],
   runDate: string,
   windowDays: number,
   lookbackDays: number
@@ -496,6 +535,101 @@ type StatSummary = {
   max: number;
 };
 
+
+type NoveltyAnnotatedItem = ScoredItem & {
+  novel: boolean;
+  first_seen: string | null;
+  last_seen: string | null;
+  seen_count: number;
+};
+
+function annotateNovelty(
+  scored: ScoredItem[],
+  runDate: string,
+  noveltyWindowDays: number
+): NoveltyAnnotatedItem[] {
+  return scored.map((item) => {
+    const history = getClusterHistory(item.idea_cluster_id, runDate);
+    const novel = isNovelByWindow(history.last_seen, runDate, noveltyWindowDays);
+    return {
+      ...item,
+      novel,
+      first_seen: history.first_seen,
+      last_seen: history.last_seen,
+      seen_count: history.seen_count
+    };
+  });
+}
+
+function selectTopClaimsWithNoveltyQuota(
+  scored: NoveltyAnnotatedItem[],
+  topCount: number,
+  targetRatio: number
+): {
+  selectedTopClaims: NoveltyAnnotatedItem[];
+  achievedRatio: number;
+  novelClustersInTop: number;
+  totalClusters: number;
+  quotaUnmet: boolean;
+} {
+  const uniqueByCluster = dedupeByIdeaCluster(scored);
+  const requiredNovel = Math.ceil(topCount * targetRatio);
+  const novel = uniqueByCluster.filter((item) => item.novel);
+  const novelPicks = novel.slice(0, requiredNovel);
+
+  const selected = [...novelPicks];
+  for (const item of uniqueByCluster) {
+    if (selected.length >= topCount) {
+      break;
+    }
+    if (!selected.some((picked) => picked.idea_cluster_id === item.idea_cluster_id)) {
+      selected.push(item);
+    }
+  }
+
+  const novelClustersInTop = selected.filter((item) => item.novel).length;
+  const achievedRatio = selected.length === 0 ? 0 : novelClustersInTop / selected.length;
+
+  return {
+    selectedTopClaims: selected,
+    achievedRatio,
+    novelClustersInTop,
+    totalClusters: uniqueByCluster.length,
+    quotaUnmet: novel.length < requiredNovel
+  };
+}
+
+function dedupeByIdeaCluster<T extends { idea_cluster_id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const output: T[] = [];
+  for (const item of items) {
+    if (seen.has(item.idea_cluster_id)) {
+      continue;
+    }
+    seen.add(item.idea_cluster_id);
+    output.push(item);
+  }
+  return output;
+}
+
+function isNovelByWindow(lastSeen: string | null, runDate: string, noveltyWindowDays: number): boolean {
+  if (!lastSeen) {
+    return true;
+  }
+  const runDateUtc = new Date(`${runDate}T00:00:00Z`);
+  const noveltyCutoff = new Date(runDateUtc.getTime() - noveltyWindowDays * 24 * 60 * 60 * 1000);
+  return new Date(lastSeen).getTime() < noveltyCutoff.getTime();
+}
+
+function formatNewSignals(items: Array<{ title: string; source: string; published_at: string | null }>): string {
+  if (items.length === 0) {
+    return "- None";
+  }
+
+  return items
+    .map((item) => `- ${item.title} (${item.source}, ${(item.published_at ?? "unknown").slice(0, 10)})`)
+    .join("\n");
+}
 function applyTimestampPolicy<T extends { timestamp_tier: string }>(
   items: T[],
   allowT4: boolean

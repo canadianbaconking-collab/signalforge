@@ -287,6 +287,60 @@ async function runOfflineSmoke() {
     excluded_missing_timestamp: 0
   });
 
+  const noveltyHistoryOldCollector = async () => ({
+    items: [
+      {
+        title: "Ancient signal alpha",
+        url: "https://history.example.com/alpha-old",
+        snippet: "Ancient signal alpha",
+        published_at: "2023-12-01T00:00:00.000Z",
+        source: "reddit"
+      }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
+  });
+
+  const noveltyHistoryRecentCollector = async () => ({
+    items: [
+      {
+        title: "Recurring signal beta",
+        url: "https://history.example.com/beta-recent",
+        snippet: "Recurring signal beta",
+        published_at: "2024-02-05T00:00:00.000Z",
+        source: "reddit"
+      }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
+  });
+
+  const noveltyQuotaCollector = async () => ({
+    items: [
+      { title: "Ancient signal alpha", url: "https://now.example.com/alpha-1", snippet: "Ancient signal alpha", published_at: recentIso, source: "reddit" },
+      { title: "Ancient signal gamma", url: "https://now.example.com/gamma-1", snippet: "Ancient signal gamma", published_at: recentIso, source: "reddit" },
+      { title: "Recurring signal beta", url: "https://now.example.com/beta-1", snippet: "Recurring signal beta", published_at: recentIso, source: "reddit" },
+      { title: "Recurring signal delta", url: "https://now.example.com/delta-1", snippet: "Recurring signal delta", published_at: recentIso, source: "reddit" }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
+  });
+
+  const noveltyQuotaUnmetCollector = async () => ({
+    items: [
+      { title: "Recurring signal beta", url: "https://now.example.com/beta-2", snippet: "Recurring signal beta", published_at: recentIso, source: "reddit" },
+      { title: "Recurring signal delta", url: "https://now.example.com/delta-2", snippet: "Recurring signal delta", published_at: recentIso, source: "reddit" },
+      { title: "Recurring signal epsilon", url: "https://now.example.com/epsilon-1", snippet: "Recurring signal epsilon", published_at: recentIso, source: "reddit" },
+      { title: "New but limited zeta", url: "https://now.example.com/zeta-1", snippet: "New but limited zeta", published_at: recentIso, source: "reddit" }
+    ],
+    failed: false,
+    strategy_used: "reddit_json",
+    excluded_missing_timestamp: 0
+  });
+
   const t4Collector = async () => ({
     items: [
       {
@@ -322,6 +376,26 @@ async function runOfflineSmoke() {
       github: fakeGithubCollector
     }
   };
+
+  await runEngine({
+    query: "Novelty Seed Old",
+    window_days: 365,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: false,
+    run_date: "2023-12-01",
+    collectors: { reddit: noveltyHistoryOldCollector }
+  });
+
+  await runEngine({
+    query: "Novelty Seed Recent",
+    window_days: 30,
+    sources: ["reddit"],
+    top_n: 5,
+    allow_t4: false,
+    run_date: "2024-02-05",
+    collectors: { reddit: noveltyHistoryRecentCollector }
+  });
 
   await runEngine({
     query: options.query,
@@ -381,6 +455,30 @@ async function runOfflineSmoke() {
       reddit: t4Collector
     }
   });
+  const noveltyQuotaResult = await runEngine({
+    query: "Novelty Quota Query",
+    window_days: 30,
+    sources: ["reddit"],
+    top_n: 4,
+    run_date: fixedRunDate,
+    novelty_window_days: 30,
+    novelty_target_ratio: 0.5,
+    collectors: {
+      reddit: noveltyQuotaCollector
+    }
+  });
+  const noveltyQuotaUnmetResult = await runEngine({
+    query: "Novelty Quota Unmet Query",
+    window_days: 30,
+    sources: ["reddit"],
+    top_n: 4,
+    run_date: fixedRunDate,
+    novelty_window_days: 30,
+    novelty_target_ratio: 0.75,
+    collectors: {
+      reddit: noveltyQuotaUnmetCollector
+    }
+  });
 
   Date.now = originalDateNow;
 
@@ -394,6 +492,9 @@ async function runOfflineSmoke() {
   const lowVolumeRun = readJson(lowVolumeResult.artifacts.run);
   const allowT4Run = readJson(allowT4Result.artifacts.run);
   const disallowT4Run = readJson(disallowT4Result.artifacts.run);
+  const noveltyQuotaRun = readJson(noveltyQuotaResult.artifacts.run);
+  const noveltyQuotaSources = readJson(noveltyQuotaResult.artifacts.sources);
+  const noveltyQuotaUnmetRun = readJson(noveltyQuotaUnmetResult.artifacts.run);
 
   const expectedRunFolderSuffix = path.join("runs", fixedRunDate, slugify(options.query));
   const sourceUrls = sources.map((item) => item.url);
@@ -404,6 +505,9 @@ async function runOfflineSmoke() {
   const quantumItems = sources.filter((item) => item.title === "Quantum widget leak");
   const githubItem = sources.find((item) => item.source === "github_issue");
   const baselineDate = oldIso.slice(0, 10);
+  const noveltyQuotaNovelCount = noveltyQuotaSources.filter((item) => item.novel).length;
+  const recurringBeta = noveltyQuotaSources.find((item) => item.title === "Recurring signal beta");
+  const ancientAlpha = noveltyQuotaSources.find((item) => item.title === "Ancient signal alpha");
 
   const checks = [
     assertCondition(resultA.run_id === resultB.run_id, "Determinism: run_id is stable"),
@@ -535,6 +639,26 @@ async function runOfflineSmoke() {
     assertCondition(
       disallowT4Run.integrity.components.timestamp > allowT4Run.integrity.components.timestamp,
       "Integrity: excluding T4 improves timestamp component"
+    ),
+    assertCondition(
+      ancientAlpha?.novel === true && recurringBeta?.novel === false,
+      "Novelty labeling: clusters are marked novel vs recurring from SQLite history"
+    ),
+    assertCondition(
+      typeof recurringBeta?.first_seen === "string" && typeof recurringBeta?.last_seen === "string",
+      "Novelty labeling: first_seen/last_seen are attached to source artifacts"
+    ),
+    assertCondition(
+      noveltyQuotaNovelCount >= 2 && noveltyQuotaRun.novelty?.novel_clusters_in_top >= 2,
+      "Novelty quota: top claims include required novel clusters when available"
+    ),
+    assertCondition(
+      noveltyQuotaRun.novelty?.quota_unmet === false && !noveltyQuotaResult.flags.includes("NOVELTY_QUOTA_UNMET"),
+      "Novelty telemetry: quota_unmet is false when quota is satisfied"
+    ),
+    assertCondition(
+      noveltyQuotaUnmetRun.novelty?.quota_unmet === true && noveltyQuotaUnmetResult.flags.includes("NOVELTY_QUOTA_UNMET"),
+      "Novelty telemetry: NOVELTY_QUOTA_UNMET is flagged when quota cannot be met"
     ),
     assertCondition(
       !sourceUrls.includes(baselineUrl),

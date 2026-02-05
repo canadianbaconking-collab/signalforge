@@ -3,8 +3,23 @@ import path from "path";
 import Database from "better-sqlite3";
 
 const DEFAULT_DB_PATH = path.join(__dirname, "..", "cache", "signalforge.db");
-const SCHEMA_PATH = path.join(__dirname, "schema.sql");
+const SCHEMA_PATH = resolveSchemaPath();
 const BASELINE_DEFAULT_LOOKBACK_DAYS = 180;
+const CLUSTER_HISTORY_LOOKBACK_DAYS = 180;
+
+
+function resolveSchemaPath(): string {
+  const candidates = [
+    path.join(__dirname, "schema.sql"),
+    path.join(__dirname, "..", "..", "storage", "schema.sql")
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+}
 
 export type RunRecord = {
   id: string;
@@ -42,10 +57,16 @@ export type BaselineItemRecord = {
   engagement: number | null;
 };
 
-let db: Database.Database | null = null;
+export type ClusterHistoryRecord = {
+  first_seen: string | null;
+  last_seen: string | null;
+  seen_count: number;
+};
+
+let db: any = null;
 
 /** Initialize the SQLite database and apply schema. */
-export function getDb(): Database.Database {
+export function getDb(): any {
   if (db) {
     return db;
   }
@@ -146,11 +167,48 @@ export function closeDb(): void {
   }
 }
 
+export function getClusterHistory(
+  ideaClusterId: string,
+  runDate: string,
+  lookbackDays = CLUSTER_HISTORY_LOOKBACK_DAYS
+): ClusterHistoryRecord {
+  const database = getDb();
+  const runDateEnd = `${runDate}T23:59:59.999Z`;
+  const lookbackCutoff = new Date(new Date(`${runDate}T00:00:00Z`).getTime() - lookbackDays * 24 * 60 * 60 * 1000)
+    .toISOString();
+
+  const row = database
+    .prepare(
+      `SELECT
+        MIN(COALESCE(items.published_at, runs.created_at)) AS first_seen,
+        MAX(COALESCE(items.published_at, runs.created_at)) AS last_seen,
+        COUNT(*) AS seen_count
+      FROM items
+      INNER JOIN runs ON runs.id = items.run_id
+      WHERE items.idea_cluster_id = ?
+        AND COALESCE(items.published_at, runs.created_at) >= ?
+        AND COALESCE(items.published_at, runs.created_at) <= ?`
+    )
+    .get(ideaClusterId, lookbackCutoff, runDateEnd) as
+    | { first_seen: string | null; last_seen: string | null; seen_count: number }
+    | undefined;
+
+  return {
+    first_seen: row?.first_seen ?? null,
+    last_seen: row?.last_seen ?? null,
+    seen_count: row?.seen_count ?? 0
+  };
+}
+
+export function upsertClusterSeen(_ideaClusterId: string, _runDate: string): void {
+  // Cluster history is derived from existing rows in runs/items for deterministic replay.
+}
+
 function resolveDbPath(): string {
   return process.env.SIGNALFORGE_DB_PATH ?? DEFAULT_DB_PATH;
 }
 
-function ensureItemColumns(database: Database.Database): void {
+function ensureItemColumns(database: any): void {
   const columns = database.prepare("PRAGMA table_info(items)").all() as Array<{ name: string }>;
   const columnNames = new Set(columns.map((column) => column.name));
   const additions: Array<{ name: string; type: string }> = [
