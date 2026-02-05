@@ -67,6 +67,27 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
         snippet: "Missing timestamp.",
         published_at: null,
         source: "reddit"
+      },
+      {
+        title: "SignalForge CLI launch",
+        url: "https://example.com/cli-launch",
+        snippet: "SignalForge CLI launch",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Quantum widget leak",
+        url: "https://repost.com/quantum-widget-1",
+        snippet: "Quantum widget leak",
+        published_at: recentIso,
+        source: "reddit"
+      },
+      {
+        title: "Quantum widget leak",
+        url: "https://repost.com/quantum-widget-2",
+        snippet: "Quantum widget leak",
+        published_at: recentIso,
+        source: "reddit"
       }
     ],
     failed: false,
@@ -88,19 +109,47 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       snippet: "Fresh HN item.",
       published_at: recentIso,
       source: "hn"
+    },
+    {
+      title: "SignalForge CLI launch",
+      url: "https://news.ycombinator.com/item?id=999",
+      snippet: "SignalForge CLI launch",
+      published_at: recentIso,
+      source: "hn"
+    },
+    {
+      title: "Quantum widget leak",
+      url: "https://repost.com/quantum-widget-3",
+      snippet: "Quantum widget leak",
+      published_at: recentIso,
+      source: "hn"
     }
   ];
+
+  const fakeGithubCollector = async (): Promise<{ items: CollectedItem[]; failed: boolean }> => ({
+    items: [
+      {
+        title: "ForgeRunner release",
+        url: "https://github.com/signalforge/forgerunner/issues/1",
+        snippet: "ForgeRunner release notes",
+        published_at: recentIso,
+        source: "github_issue"
+      }
+    ],
+    failed: false
+  });
 
   const options = {
     query: "Smoke Test Query",
     window_days: 7,
-    sources: ["reddit", "hn"],
+    sources: ["reddit", "hn", "github_issue"],
     top_n: 10,
     allow_t4: false,
     run_date: fixedRunDate,
     collectors: {
       reddit: fakeRedditCollector,
-      hn: fakeHnCollector
+      hn: fakeHnCollector,
+      github: fakeGithubCollector
     }
   };
 
@@ -111,7 +160,18 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
 
   const runFolder = resultA.artifacts.run_folder;
   const runFiles = fs.readdirSync(runFolder);
-  const sources = readJson<Array<{ url: string; source: string }>>(resultA.artifacts.sources);
+  const sources = readJson<
+    Array<{
+      url: string;
+      source: string;
+      title: string;
+      idea_cluster_id: string;
+      evidence_grade: string;
+      origin_id: string;
+      origin_count: number;
+      echo_risk: number;
+    }>
+  >(resultA.artifacts.sources);
   const runData = readJson<{
     counts: {
       kept: number;
@@ -120,6 +180,10 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       per_source_counts: Record<string, number>;
     };
     timestamp_tier_counts: Record<string, number>;
+    idea_cluster_count: number;
+    origin_count_stats: { min: number; median: number; max: number };
+    echo_risk_stats: { min: number; median: number; max: number };
+    evidence_grade_counts: Record<string, number>;
   }>(resultA.artifacts.run);
 
   const expectedRunFolderSuffix = path.join("runs", fixedRunDate, slugify(options.query));
@@ -127,6 +191,9 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
   const uniqueUrls = new Set(sourceUrls);
   const perSourceCounts = runData.counts.per_source_counts;
   const perSourceSum = Object.values(perSourceCounts).reduce((sum, value) => sum + value, 0);
+  const signalforgeItems = sources.filter((item) => item.title === "SignalForge CLI launch");
+  const quantumItems = sources.filter((item) => item.title === "Quantum widget leak");
+  const githubItem = sources.find((item) => item.source === "github_issue");
 
   const checks: SmokeResult[] = [
     assertCondition(resultA.run_id === resultB.run_id, "Determinism: run_id is stable"),
@@ -159,7 +226,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       "Time window: items older than window_days are excluded"
     ),
     assertCondition(
-      runData.timestamp_tier_counts.T1 === 3,
+      runData.timestamp_tier_counts.T1 === 9,
       "Timestamp tiering: ISO timestamps counted as T1"
     ),
     assertCondition(
@@ -167,7 +234,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       "Timestamp tiering: missing timestamps counted as T4"
     ),
     assertCondition(
-      runData.counts.excluded_t4 === 1 && runData.counts.kept === 3,
+      runData.counts.excluded_t4 === 1 && runData.counts.kept === 9,
       "Timestamp policy: allow_t4=false excludes T4 items"
     ),
     assertCondition(
@@ -179,7 +246,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       "Telemetry: per_source_counts sums to kept item count"
     ),
     assertCondition(
-      perSourceCounts.reddit === 1 && perSourceCounts.hn === 2,
+      perSourceCounts.reddit === 4 && perSourceCounts.hn === 4 && perSourceCounts.github_issue === 1,
       "Telemetry: per_source_counts per source values are correct"
     ),
     assertCondition(
@@ -189,6 +256,47 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
     assertCondition(
       resultA.flags.every((flag) => !flag.endsWith("FETCH_FAILED")),
       "Failure behavior: no fetch failure flags in offline mode"
+    ),
+    assertCondition(
+      signalforgeItems.length === 2 && new Set(signalforgeItems.map((item) => item.idea_cluster_id)).size === 1,
+      "Idea clustering: shared signature items map to same idea_cluster_id"
+    ),
+    assertCondition(
+      signalforgeItems.every((item) => item.origin_count === 2),
+      "Idea clustering: origin_count increases across different domains"
+    ),
+    assertCondition(
+      quantumItems.length === 3 && quantumItems.every((item) => item.origin_count === 1),
+      "Idea clustering: reposts from same domain share a single origin"
+    ),
+    assertCondition(
+      quantumItems.length > 0 && quantumItems.every((item) => item.echo_risk >= 0.6),
+      "Idea clustering: echo_risk is high for repost-heavy clusters"
+    ),
+    assertCondition(
+      githubItem?.evidence_grade === "implementation-confirmed",
+      "Evidence grading: github sources yield implementation-confirmed grade"
+    ),
+    assertCondition(
+      runData.idea_cluster_count === 5,
+      "Telemetry: idea_cluster_count tracks unique idea clusters"
+    ),
+    assertCondition(
+      runData.origin_count_stats.min === 1 &&
+        runData.origin_count_stats.median === 1 &&
+        runData.origin_count_stats.max === 2,
+      "Telemetry: origin_count_stats min/median/max are correct"
+    ),
+    assertCondition(
+      runData.echo_risk_stats.min === 0 &&
+        runData.echo_risk_stats.median === 0 &&
+        runData.echo_risk_stats.max >= 0.6,
+      "Telemetry: echo_risk_stats min/median/max are correct"
+    ),
+    assertCondition(
+      runData.evidence_grade_counts[\"discussion-only\"] === 4 &&
+        runData.evidence_grade_counts[\"implementation-confirmed\"] === 1,
+      "Telemetry: evidence_grade_counts map is populated"
     ),
     assertCondition(
       fs.existsSync(resultA.artifacts.context_block),

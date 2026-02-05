@@ -18,7 +18,8 @@ export function buildContextBlock(input: ContextBlockInput): string {
   const flagsText = input.flags.length ? input.flags.join(", ") : "none";
 
   const claims = input.topItems.slice(0, 5).map((item, index) => {
-    return `${index + 1}. ${item.title} (${item.source})`;
+    const echoRisk = Number.isFinite(item.echo_risk) ? item.echo_risk.toFixed(2) : "0.00";
+    return `${index + 1}. ${item.title} (${item.source}) [grade=${item.evidence_grade} origins=${item.origin_count} echo=${echoRisk}]`;
   });
 
   const prompt = `You are an expert research assistant. Expand on the top claims above. Provide concise bullet points with citations where possible.`;
