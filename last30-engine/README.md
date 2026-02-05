@@ -31,6 +31,8 @@ Offline smoke tests use deterministic stub collectors and do not require network
 npm run smoke
 ```
 
+The smoke runner is a plain Node.js script (`tests/smoke.js`) so it does not rely on `tsx` or `npx`.
+
 To opt in to a live smoke check against Hacker News, set the environment variable:
 
 ```bash

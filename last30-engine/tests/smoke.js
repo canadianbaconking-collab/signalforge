@@ -1,18 +1,47 @@
-import fs from "fs";
-import path from "path";
-import { runEngine } from "../engine/runEngine";
-import { CollectedItem } from "../engine/collectors/types";
-import { RedditCollectorResult } from "../engine/collectors/redditCollector";
+"use strict";
 
-type SmokeResult = {
-  name: string;
-  passed: boolean;
-  details?: string;
-};
+const fs = require("fs");
+const path = require("path");
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
-function slugify(value: string): string {
+/**
+ * @typedef {Object} SmokeResult
+ * @property {string} name
+ * @property {boolean} passed
+ * @property {string=} details
+ */
+
+/**
+ * @returns {{ runEngine: import("../engine/runEngine").runEngine }}
+ */
+function loadRunEngine() {
+  const distRunEngine = path.join(__dirname, "..", "dist", "engine", "runEngine.js");
+  if (fs.existsSync(distRunEngine)) {
+    return require(distRunEngine);
+  }
+
+  const tsNodeRegister = path.join(
+    __dirname,
+    "..",
+    "node_modules",
+    "ts-node",
+    "register",
+    "transpile-only.js"
+  );
+  if (fs.existsSync(tsNodeRegister)) {
+    require(tsNodeRegister);
+    return require(path.join(__dirname, "..", "engine", "runEngine.ts"));
+  }
+
+  console.error("Smoke runner could not locate a compiled engine or ts-node register.");
+  console.error("Run `npm run build` to generate dist output or install dev dependencies.");
+  process.exit(1);
+}
+
+const { runEngine } = loadRunEngine();
+
+function slugify(value) {
   return (
     value
       .toLowerCase()
@@ -22,21 +51,35 @@ function slugify(value: string): string {
   );
 }
 
-function assertCondition(condition: boolean, message: string): SmokeResult {
+/**
+ * @param {boolean} condition
+ * @param {string} message
+ * @returns {SmokeResult}
+ */
+function assertCondition(condition, message) {
   return { name: message, passed: condition, details: condition ? undefined : message };
 }
 
-function readJson<T>(filePath: string): T {
-  return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+/**
+ * @template T
+ * @param {string} filePath
+ * @returns {T}
+ */
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, "utf8"));
 }
 
-function collectResults(results: SmokeResult[]): { failures: SmokeResult[]; passes: SmokeResult[] } {
+/**
+ * @param {SmokeResult[]} results
+ * @returns {{ failures: SmokeResult[]; passes: SmokeResult[] }}
+ */
+function collectResults(results) {
   const failures = results.filter((result) => !result.passed);
   const passes = results.filter((result) => result.passed);
   return { failures, passes };
 }
 
-async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: SmokeResult[] }> {
+async function runOfflineSmoke() {
   const fixedNow = new Date("2024-02-10T12:00:00Z");
   const fixedRunDate = "2024-02-10";
   const originalDateNow = Date.now;
@@ -45,7 +88,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
   const recentIso = new Date(fixedNow.getTime() - 2 * ONE_DAY_MS).toISOString();
   const oldIso = new Date(fixedNow.getTime() - 10 * ONE_DAY_MS).toISOString();
 
-  const fakeRedditCollector = async (): Promise<RedditCollectorResult> => ({
+  const fakeRedditCollector = async () => ({
     items: [
       {
         title: "Recent Reddit",
@@ -95,7 +138,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
     excluded_missing_timestamp: 1
   });
 
-  const fakeHnCollector = async (): Promise<CollectedItem[]> => [
+  const fakeHnCollector = async () => [
     {
       title: "HN Duplicate",
       url: "https://example.com/dup",
@@ -126,7 +169,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
     }
   ];
 
-  const fakeGithubCollector = async (): Promise<{ items: CollectedItem[]; failed: boolean }> => ({
+  const fakeGithubCollector = async () => ({
     items: [
       {
         title: "ForgeRunner release",
@@ -160,31 +203,8 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
 
   const runFolder = resultA.artifacts.run_folder;
   const runFiles = fs.readdirSync(runFolder);
-  const sources = readJson<
-    Array<{
-      url: string;
-      source: string;
-      title: string;
-      idea_cluster_id: string;
-      evidence_grade: string;
-      origin_id: string;
-      origin_count: number;
-      echo_risk: number;
-    }>
-  >(resultA.artifacts.sources);
-  const runData = readJson<{
-    counts: {
-      kept: number;
-      excluded_t4: number;
-      excluded_missing_timestamp: number;
-      per_source_counts: Record<string, number>;
-    };
-    timestamp_tier_counts: Record<string, number>;
-    idea_cluster_count: number;
-    origin_count_stats: { min: number; median: number; max: number };
-    echo_risk_stats: { min: number; median: number; max: number };
-    evidence_grade_counts: Record<string, number>;
-  }>(resultA.artifacts.run);
+  const sources = readJson(resultA.artifacts.sources);
+  const runData = readJson(resultA.artifacts.run);
 
   const expectedRunFolderSuffix = path.join("runs", fixedRunDate, slugify(options.query));
   const sourceUrls = sources.map((item) => item.url);
@@ -195,7 +215,7 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
   const quantumItems = sources.filter((item) => item.title === "Quantum widget leak");
   const githubItem = sources.find((item) => item.source === "github_issue");
 
-  const checks: SmokeResult[] = [
+  const checks = [
     assertCondition(resultA.run_id === resultB.run_id, "Determinism: run_id is stable"),
     assertCondition(
       resultA.artifacts.run_folder === resultB.artifacts.run_folder,
@@ -238,7 +258,8 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       "Timestamp policy: allow_t4=false excludes T4 items"
     ),
     assertCondition(
-      uniqueUrls.size === sources.length && sourceUrls.filter((url) => url === "https://example.com/dup").length === 1,
+      uniqueUrls.size === sources.length &&
+        sourceUrls.filter((url) => url === "https://example.com/dup").length === 1,
       "Dedupe: duplicate URLs only appear once in sources output"
     ),
     assertCondition(
@@ -294,8 +315,8 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
       "Telemetry: echo_risk_stats min/median/max are correct"
     ),
     assertCondition(
-      runData.evidence_grade_counts[\"discussion-only\"] === 4 &&
-        runData.evidence_grade_counts[\"implementation-confirmed\"] === 1,
+      runData.evidence_grade_counts["discussion-only"] === 4 &&
+        runData.evidence_grade_counts["implementation-confirmed"] === 1,
       "Telemetry: evidence_grade_counts map is populated"
     ),
     assertCondition(
@@ -310,12 +331,12 @@ async function runOfflineSmoke(): Promise<{ failures: SmokeResult[]; passes: Smo
   return collectResults(checks);
 }
 
-async function runLiveSmoke(): Promise<string[]> {
+async function runLiveSmoke() {
   if (process.env.SIGNALFORGE_LIVE_SMOKE !== "1") {
     return [];
   }
 
-  const warnings: string[] = [];
+  const warnings = [];
   try {
     const liveResult = await runEngine({
       query: "OpenAI developer workflow",
@@ -324,8 +345,8 @@ async function runLiveSmoke(): Promise<string[]> {
       top_n: 5
     });
 
-    const sources = readJson<Array<{ source: string }>>(liveResult.artifacts.sources);
-    const runData = readJson<{ timestamp_tier_counts: Record<string, number> }>(liveResult.artifacts.run);
+    const sources = readJson(liveResult.artifacts.sources);
+    const runData = readJson(liveResult.artifacts.run);
 
     if (!fs.existsSync(liveResult.artifacts.run_folder)) {
       warnings.push("Live smoke: run folder missing");
@@ -347,7 +368,7 @@ async function runLiveSmoke(): Promise<string[]> {
   return warnings;
 }
 
-async function main(): Promise<void> {
+async function main() {
   const offline = await runOfflineSmoke();
   const liveWarnings = await runLiveSmoke();
 
