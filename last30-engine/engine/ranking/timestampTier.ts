@@ -1,4 +1,4 @@
-export type TimestampTier = "T1" | "T4";
+export type TimestampTier = "T1" | "T2" | "T3" | "T4";
 
 export type TimestampResult = {
   tier: TimestampTier;
@@ -6,7 +6,10 @@ export type TimestampResult = {
 };
 
 /** Assign timestamp tier and validate ISO timestamp. */
-export function assignTimestampTier(publishedAt: string | null): TimestampResult {
+export function assignTimestampTier(
+  publishedAt: string | null,
+  basis: "platform" | "publisher" | "inferred" = "platform"
+): TimestampResult {
   if (!publishedAt) {
     return { tier: "T4", isValid: false };
   }
@@ -16,13 +19,13 @@ export function assignTimestampTier(publishedAt: string | null): TimestampResult
     return { tier: "T4", isValid: false };
   }
 
-  return { tier: "T1", isValid: true };
+  return { tier: basis === "platform" ? "T1" : basis === "publisher" ? "T2" : "T3", isValid: true };
 }
 
 /** Filter items older than the configured window. */
-export function isWithinWindow(publishedAt: string | null, windowDays: number): boolean {
+export function isWithinWindow(publishedAt: string | null, windowDays: number, referenceTime = Date.now()): boolean {
   if (!publishedAt) {
-    return true;
+    return false;
   }
 
   const parsed = Date.parse(publishedAt);
@@ -30,7 +33,7 @@ export function isWithinWindow(publishedAt: string | null, windowDays: number): 
     return false;
   }
 
-  const ageMs = Date.now() - parsed;
+  const ageMs = referenceTime - parsed;
   const windowMs = windowDays * 24 * 60 * 60 * 1000;
-  return ageMs <= windowMs;
+  return ageMs >= 0 && ageMs <= windowMs;
 }

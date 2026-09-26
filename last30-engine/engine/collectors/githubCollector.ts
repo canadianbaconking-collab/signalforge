@@ -75,13 +75,14 @@ async function fetchIssues(
   const data = await fetchJson<GithubSearchResponse<GithubIssue>>(url, headers);
 
   return (data.items ?? [])
-    .filter((issue) => Boolean(issue?.created_at))
+    .filter((issue) => Boolean(issue?.created_at) && !Number.isNaN(Date.parse(issue.created_at)))
     .map((issue) => ({
       title: issue.title,
       url: issue.html_url,
       snippet: buildSnippet(issue.body),
       published_at: new Date(issue.created_at).toISOString(),
-      source: "github_issue"
+      source: "github_issue",
+      timestamp_basis: "platform"
     }));
 }
 
@@ -109,7 +110,7 @@ async function fetchReleases(
     const releaseData = await fetchJson<GithubRelease[]>(releaseUrl, headers);
 
     for (const release of releaseData ?? []) {
-      if (!release.published_at) {
+      if (!release.published_at || Number.isNaN(Date.parse(release.published_at))) {
         continue;
       }
       if (!isWithinWindow(release.published_at, windowDays)) {
@@ -121,7 +122,8 @@ async function fetchReleases(
         url: release.html_url,
         snippet: buildSnippet(release.body),
         published_at: publishedAt,
-        source: "github_release"
+        source: "github_release",
+        timestamp_basis: "platform"
       });
     }
   }

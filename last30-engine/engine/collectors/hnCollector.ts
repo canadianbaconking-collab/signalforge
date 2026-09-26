@@ -27,13 +27,14 @@ export async function hnCollector(query: string, limit = 10): Promise<CollectedI
       ? new Date(hit.created_at_i * 1000).toISOString()
       : hit.created_at
       ? new Date(hit.created_at).toISOString()
-      : new Date().toISOString();
+      : null;
     return {
       title: hit.title?.trim() || "Untitled",
       url: hit.url?.trim() || `https://news.ycombinator.com/item?id=${hit.objectID}`,
       snippet: buildSnippet(hit.story_text),
       published_at: publishedAt,
-      source: "hn"
+      source: "hn",
+      timestamp_basis: "platform"
     };
   });
 }

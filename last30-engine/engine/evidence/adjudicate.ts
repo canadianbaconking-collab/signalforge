@@ -1,0 +1,232 @@
+import crypto from "crypto";
+import { CollectedItem } from "../collectors/types";
+import { assignTimestampTier, TimestampTier } from "../ranking/timestampTier";
+
+export type RejectionReason =
+  | "INVALID_URL"
+  | "MISSING_TIMESTAMP"
+  | "INVALID_TIMESTAMP"
+  | "OUTSIDE_WINDOW"
+  | "FUTURE_TIMESTAMP"
+  | "DUPLICATE_URL";
+
+export type EvidenceRecord = {
+  evidence_id: string;
+  claim_id: string;
+  claim_key: string;
+  title: string;
+  url: string;
+  snippet: string;
+  published_at: string | null;
+  source: string;
+  timestamp_tier: TimestampTier;
+  stance: "supports" | "refutes" | "neutral" | "unassessed";
+  family_id: string;
+  family_basis: "originator" | "primary_url" | "domain";
+  primary_url: string | null;
+  metadata_origin: "none" | "collector" | "operator";
+};
+
+export type RejectedEvidence = EvidenceRecord & { reason: RejectionReason };
+
+export type ClaimRecord = {
+  claim_id: string;
+  label: string;
+  evidence_ids: string[];
+  support_ids: string[];
+  counter_ids: string[];
+  independent_support_families: number;
+  independent_counter_families: number;
+  observed_families: number;
+  dependence_unverified: boolean;
+  status: "contested" | "corroborated" | "single_origin" | "unassessed";
+  revalidation: "current" | "revalidate_soon";
+  revalidate_by: string;
+};
+
+export type EvidenceSnapshot = {
+  schema_version: 1;
+  artifact_id: string;
+  evidence_hash: string;
+  run_date: string;
+  reference_at: string;
+  window_days: number;
+  accepted: EvidenceRecord[];
+  rejected: RejectedEvidence[];
+  claims: ClaimRecord[];
+  flags: string[];
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Pure, conservative adjudication. No text classifier silently invents claim stance or origin. */
+export function adjudicateEvidence(
+  collected: CollectedItem[],
+  runDate: string,
+  windowDays: number,
+  collectorFlags: string[] = [],
+  referenceAt = `${runDate}T23:59:59.999Z`
+): EvidenceSnapshot {
+  const reference = Date.parse(referenceAt);
+  if (!Number.isFinite(reference) || !Number.isInteger(windowDays) || windowDays < 1) {
+    throw new Error("Invalid evidence window or run date");
+  }
+  const cutoff = reference - windowDays * DAY_MS;
+  const prepared = collected.map((item) => prepare(item));
+  prepared.sort((a, b) =>
+    a.record.url.localeCompare(b.record.url) ||
+    tierRank(a.record.timestamp_tier) - tierRank(b.record.timestamp_tier) ||
+    a.record.evidence_id.localeCompare(b.record.evidence_id)
+  );
+
+  const accepted: EvidenceRecord[] = [];
+  const rejected: RejectedEvidence[] = [];
+  const seenUrls = new Set<string>();
+  for (const { record, invalidUrl, invalidTimestamp } of prepared) {
+    let reason: RejectionReason | null = null;
+    const time = record.published_at ? Date.parse(record.published_at) : NaN;
+    if (invalidUrl) reason = "INVALID_URL";
+    else if (invalidTimestamp) reason = "INVALID_TIMESTAMP";
+    else if (!record.published_at) reason = "MISSING_TIMESTAMP";
+    else if (time > reference) reason = "FUTURE_TIMESTAMP";
+    else if (time < cutoff) reason = "OUTSIDE_WINDOW";
+    else if (seenUrls.has(record.url)) reason = "DUPLICATE_URL";
+    if (reason) {
+      rejected.push({ ...record, reason });
+    } else {
+      accepted.push(record);
+      seenUrls.add(record.url);
+    }
+  }
+
+  const byClaim = new Map<string, EvidenceRecord[]>();
+  for (const record of accepted) {
+    const group = byClaim.get(record.claim_id) ?? [];
+    group.push(record);
+    byClaim.set(record.claim_id, group);
+  }
+  const claims = [...byClaim.entries()].map(([claimId, records]): ClaimRecord => {
+    const supports = records.filter((r) => r.stance === "supports");
+    const counters = records.filter((r) => r.stance === "refutes");
+    const verified = (r: EvidenceRecord) =>
+      r.family_basis !== "domain" && r.timestamp_tier !== "T3";
+    const supportFamilies = new Set(supports.filter(verified).map((r) => r.family_id));
+    const counterFamilies = new Set(counters.filter(verified).map((r) => r.family_id));
+    const newest = Math.max(...records.map((r) => Date.parse(r.published_at!)));
+    const revalidateBy = newest + windowDays * DAY_MS;
+    const status: ClaimRecord["status"] =
+      supports.length && counters.length ? "contested" :
+      supportFamilies.size >= 2 ? "corroborated" :
+      supports.length ? "single_origin" : "unassessed";
+    return {
+      claim_id: claimId,
+      label: [...records].sort((a, b) => a.title.localeCompare(b.title))[0].title,
+      evidence_ids: records.map((r) => r.evidence_id).sort(),
+      support_ids: supports.map((r) => r.evidence_id).sort(),
+      counter_ids: counters.map((r) => r.evidence_id).sort(),
+      independent_support_families: supportFamilies.size,
+      independent_counter_families: counterFamilies.size,
+      observed_families: new Set(records.map((r) => r.family_id)).size,
+      dependence_unverified: records.some((r) => r.family_basis === "domain"),
+      status,
+      revalidation: revalidateBy - reference <= windowDays * DAY_MS * 0.25
+        ? "revalidate_soon" : "current",
+      revalidate_by: new Date(revalidateBy).toISOString()
+    };
+  }).sort((a, b) => a.claim_id.localeCompare(b.claim_id));
+
+  const reasons = new Set(rejected.map((r) => r.reason));
+  const flags = [...new Set([
+    ...collectorFlags,
+    ...[...reasons].map((reason) => `EVIDENCE_REJECTED_${reason}`),
+    ...(claims.some((claim) => claim.status === "contested") ? ["CONTRADICTORY_EVIDENCE"] : []),
+    ...(claims.some((claim) => claim.dependence_unverified) ? ["DEPENDENCE_UNVERIFIED"] : []),
+    ...(claims.some((claim) => claim.revalidation === "revalidate_soon") ? ["REVALIDATION_DUE_SOON"] : [])
+  ])].sort();
+  const payload = {
+    schema_version: 1 as const,
+    run_date: runDate,
+    reference_at: new Date(reference).toISOString(),
+    window_days: windowDays,
+    accepted, rejected, claims, flags
+  };
+  const evidenceHash = sha256(JSON.stringify(payload));
+  return {
+    ...payload,
+    artifact_id: `evidence:${evidenceHash}`,
+    evidence_hash: evidenceHash
+  };
+}
+
+function prepare(item: CollectedItem): {
+  record: EvidenceRecord;
+  invalidUrl: boolean;
+  invalidTimestamp: boolean;
+} {
+  const url = canonicalUrl(item.url);
+  const primary = item.primary_url ? canonicalUrl(item.primary_url) : null;
+  const parsed = item.published_at ? Date.parse(item.published_at) : NaN;
+  const invalidTimestamp = Boolean(item.published_at) && !Number.isFinite(parsed);
+  const published = Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  const timestampTier = assignTimestampTier(published, item.timestamp_basis ?? "platform").tier;
+  const claimKey = normalize(item.claim_key || item.title);
+  const claimId = `claim:${sha256(claimKey)}`;
+  const familyBasis: EvidenceRecord["family_basis"] =
+    item.originator_id ? "originator" : primary ? "primary_url" : "domain";
+  const familyKey = item.originator_id
+    ? `originator:${normalize(item.originator_id)}`
+    : primary ? `primary:${primary}` : `domain:${host(url ?? item.url)}`;
+  const recordBase = {
+    claim_id: claimId,
+    claim_key: claimKey,
+    title: item.title.trim(),
+    url: url ?? item.url.trim(),
+    snippet: item.snippet.trim(),
+    published_at: published,
+    source: item.source,
+    timestamp_tier: timestampTier,
+    stance: item.stance ?? "unassessed" as EvidenceRecord["stance"],
+    family_id: `family:${sha256(familyKey)}`,
+    family_basis: familyBasis,
+    primary_url: primary,
+    metadata_origin: (item.metadata_origin ??
+      (item.claim_key || item.stance || item.primary_url || item.originator_id ? "collector" : "none")) as EvidenceRecord["metadata_origin"]
+  };
+  return {
+    record: { evidence_id: `ev:${sha256(JSON.stringify(recordBase))}`, ...recordBase },
+    invalidUrl: !url || Boolean(item.primary_url && !primary),
+    invalidTimestamp
+  };
+}
+
+function normalize(value: string): string {
+  return value.toLowerCase().trim().replace(/\s+/g, " ");
+}
+
+function canonicalUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (!["https:", "http:"].includes(parsed.protocol) || !parsed.hostname) return null;
+    parsed.hash = "";
+    for (const key of [...parsed.searchParams.keys()]) {
+      if (/^(utm_|fbclid$|gclid$)/i.test(key)) parsed.searchParams.delete(key);
+    }
+    parsed.searchParams.sort();
+    if (parsed.pathname.length > 1) parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function host(value: string): string {
+  try { return new URL(value).hostname.toLowerCase(); } catch { return "unknown"; }
+}
+
+function tierRank(tier: TimestampTier): number {
+  return { T1: 1, T2: 2, T3: 3, T4: 4 }[tier];
+}
+
+function sha256(value: string): string {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}

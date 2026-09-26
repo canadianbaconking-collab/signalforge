@@ -22,6 +22,11 @@ export type IntegrityScoreInput = {
     clusters_with_baseline: number;
     top_claim_clusters_count: number;
   };
+  adjudication?: {
+    contested_claims: number;
+    dependence_unverified_claims: number;
+    total_claims: number;
+  };
 };
 
 export type IntegrityScoreResult = {
@@ -54,7 +59,9 @@ export function calculateIntegrityScore(input: IntegrityScoreInput): IntegritySc
   const sources = clamp(25 - sourcesPenalty, 0, 25);
 
   const medianEchoRisk = clamp01(input.echo_risk_stats?.median ?? 0);
-  const independence = clamp(20 * (1 - medianEchoRisk), 0, 20);
+  const independence = input.adjudication?.dependence_unverified_claims
+    ? Math.min(8, clamp(20 * (1 - medianEchoRisk), 0, 20))
+    : clamp(20 * (1 - medianEchoRisk), 0, 20);
 
   const evidenceCounts = input.evidence_grade_counts ?? {};
   const evidenceTotal = sumCounts(evidenceCounts);
@@ -63,11 +70,14 @@ export function calculateIntegrityScore(input: IntegrityScoreInput): IntegritySc
   const multiRatio = ratio(multiConfirmed, evidenceTotal);
   const implementationRatio = ratio(implementationConfirmed, evidenceTotal);
 
-  const evidence = clamp(
+  const preliminaryEvidence = clamp(
     5 + Math.min(10, 10 * multiRatio) + Math.min(5, 5 * implementationRatio),
     0,
     15
   );
+  const evidence = input.adjudication?.contested_claims
+    ? Math.min(5, preliminaryEvidence)
+    : preliminaryEvidence;
 
   const baseline = calculateBaselineScore(input.baseline);
 
@@ -91,6 +101,7 @@ export function calculateIntegrityScore(input: IntegrityScoreInput): IntegritySc
     medianEchoRisk,
     multiRatio,
     implementationRatio,
+    adjudication: input.adjudication,
     existingFlags: input.flags
   });
 
@@ -108,6 +119,7 @@ function buildIntegrityFlags(input: {
   medianEchoRisk: number;
   multiRatio: number;
   implementationRatio: number;
+  adjudication?: IntegrityScoreInput["adjudication"];
   existingFlags: string[];
 }): string[] {
   const flags = new Set<string>();
@@ -127,6 +139,8 @@ function buildIntegrityFlags(input: {
   if (input.multiRatio === 0 && input.implementationRatio === 0) {
     flags.add("DEGRADED_SIGNAL_LOW_EVIDENCE");
   }
+  if (input.adjudication?.contested_claims) flags.add("DEGRADED_SIGNAL_CONTRADICTION");
+  if (input.adjudication?.dependence_unverified_claims) flags.add("DEGRADED_SIGNAL_UNVERIFIED_DEPENDENCE");
 
   for (const [flag, mapped] of SOURCE_FAILURE_FLAGS.entries()) {
     if (input.existingFlags.includes(flag)) {

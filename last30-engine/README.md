@@ -1,55 +1,60 @@
-# SignalForge (Last30 Engine)
+# SignalForge engine
 
-SignalForge is a local-first research microtool that collects recent developer + AI workflow signals from mock sources, ranks them deterministically, and produces a copyable context block for GPT or Codex.
-
-## Project Overview
-
-- Local-first, deterministic research scaffold
-- Express + TypeScript server with SQLite persistence
-- Vanilla HTML UI for running and copying context blocks
-
-## Install
-
-```bash
-cd last30-engine
-npm install
-```
+Local Node/TypeScript + Express + SQLite instrument. Node 22 or newer is recommended. The server binds to `127.0.0.1:8787`.
 
 ## Run
 
 ```bash
-npm run dev
+pnpm install
+pnpm run build
+pnpm start
 ```
 
-Open [http://localhost:8787](http://localhost:8787).
+Open http://localhost:8787. For development, `pnpm run dev` runs the TypeScript server directly.
 
-## Smoke tests
-
-Offline smoke tests use deterministic stub collectors and do not require network access:
+## Verify
 
 ```bash
-npm run smoke
+pnpm run build
+pnpm run smoke
+pnpm run test:evidence
 ```
 
-The smoke runner is a plain Node.js script (`tests/smoke.js`) so it does not rely on `tsx` or `npx`.
+The 42 legacy smoke checks and the adversarial evidence tests run offline using collector overrides. Set `SIGNALFORGE_LIVE_SMOKE=1` only when you want an optional live Hacker News check.
 
-To opt in to a live smoke check against Hacker News, set the environment variable:
+## Run contract
 
-```bash
-SIGNALFORGE_LIVE_SMOKE=1 npm run smoke
+`POST /run` accepts `query`, `window_days`, `target`, `mode`, `sources`, `top_n`, and optional URL-keyed `annotations`. Supported sources are `hn`, `reddit`, `github_issue`, `github_release`, and `web`. `web` is still a mock collector and sets `WEB_MOCK_SOURCE`.
+
+```json
+{
+  "query": "AI code review workflows",
+  "window_days": 30,
+  "target": "codex",
+  "mode": "deep",
+  "sources": ["hn", "github_issue", "github_release"],
+  "top_n": 10,
+  "annotations": {
+    "https://example.org/study": {
+      "claim_key": "Code review tool X reduces defects",
+      "stance": "supports",
+      "primary_url": "https://example.org/primary-study",
+      "originator_id": "research-group-a"
+    }
+  }
+}
 ```
 
-## Example curl request
+Annotations are explicit operator judgments, matched to collector URLs exactly. A `stance` is never inferred from article text. Two observations citing one `primary_url` are one source family. Without a declared primary URL or originator, dependence remains unverified.
 
-```bash
-curl -X POST http://localhost:8787/run \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "AI code review workflows",
-    "window_days": 30,
-    "target": "gpt",
-    "mode": "quick",
-    "sources": ["reddit", "web", "hn"],
-    "top_n": 5
-  }'
-```
+The response retains `run_id`, `integrity_score`, `flags`, `artifacts`, `context_block_text`, and run telemetry. Artifacts under `runs/YYYY-MM-DD/<slug>/` include `run`, `sources`, `summary`, `context_block`, and the new `evidence` snapshot. The evidence snapshot lists accepted/rejected observations, claim and family IDs, support and counter-evidence, conflict status, revalidation date, and its SHA-256 `artifact_id`. `run_id` includes the evidence hash so changed observations do not overwrite prior artifacts.
+
+`allow_t4` is retained for legacy timestamp telemetry and its integrity component, but missing/invalid timestamps never enter the adjudicated evidence set, ranking, context claims, or history. Live runs reject future observations against actual collection time; explicit historical `run_date` replays use that UTC day's end as the reference time.
+
+## Decision and outcome records
+
+`POST /decision` requires `run_id`, the exact `artifact_id` from `evidence.json`, `question`, `choice`, `rationale`, and at least one `claim_id` from that snapshot. Decisions are immutable and idempotent by content.
+
+`POST /outcome` requires `decision_id`, ISO `observed_at`, integer `rating` from 0 to 5, and optional `notes` and `confounders`. Outcomes are append-only. `GET /decision/:id` returns the decision and its observations.
+
+SQLite defaults to `cache/signalforge.db`; set `SIGNALFORGE_DB_PATH` to use another local path.

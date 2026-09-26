@@ -37,10 +37,10 @@ export async function redditCollector(
 
 function buildRedditSearchUrl(query: string, limit: number): string {
   const { subreddit, search } = parseSubredditQuery(query);
-  const encodedQuery = encodeURIComponent(search || query);
+  const searchQuery = search || query;
   const basePath = subreddit ? `/r/${subreddit}/search.json` : "/search.json";
   const url = new URL(`${REDDIT_BASE_URL}${basePath}`);
-  url.searchParams.set("q", encodedQuery);
+  url.searchParams.set("q", searchQuery);
   url.searchParams.set("sort", "new");
   url.searchParams.set("t", "month");
   url.searchParams.set("limit", String(limit));
@@ -82,7 +82,8 @@ function parseSearchResults(
         url: `${REDDIT_BASE_URL}${data.permalink ?? ""}`,
         snippet: (data.selftext ?? "").trim(),
         published_at: publishedAt,
-        source: "reddit"
+        source: "reddit",
+        timestamp_basis: "platform" as const
       }
     ];
   });
@@ -160,7 +161,8 @@ function parseThreadJson(json: unknown): CollectedItem | null {
     url: `${REDDIT_BASE_URL}${data.permalink ?? ""}`,
     snippet: (data.selftext ?? "").trim(),
     published_at: publishedAt,
-    source: "reddit"
+    source: "reddit",
+    timestamp_basis: "platform"
   };
 }
 

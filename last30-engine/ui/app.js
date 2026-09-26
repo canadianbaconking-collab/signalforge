@@ -149,13 +149,14 @@ function extractTopClaims(contextBlockText) {
   if (!contextBlockText) {
     return "";
   }
-  const start = contextBlockText.indexOf("TOP CLAIMS");
+  const marker = "TOP SIGNALS (triage order)";
+  const start = contextBlockText.indexOf(marker);
   if (start === -1) {
     return "";
   }
 
-  const fromTopClaims = contextBlockText.slice(start + "TOP CLAIMS".length);
-  const nextSections = ["\\nPROMPT PACK", "\\nNEW SIGNALS", "\\nNOTES", "\\nMETADATA"];
+  const fromTopClaims = contextBlockText.slice(start + marker.length);
+  const nextSections = ["\nEVIDENCE ADJUDICATION", "\nPROMPT PACK", "\nNEW SIGNALS"];
   let endIndex = fromTopClaims.length;
   for (const marker of nextSections) {
     const idx = fromTopClaims.indexOf(marker);
@@ -168,7 +169,7 @@ function extractTopClaims(contextBlockText) {
     .slice(0, endIndex)
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => line.startsWith("-"))
+    .filter((line) => /^\d+\./.test(line))
     .join("\n");
 }
 
