@@ -1,6 +1,7 @@
 # SignalForge engine
 
 Local Node/TypeScript + Express + SQLite instrument. Node 22 or newer is recommended. The server binds to `127.0.0.1:8787`.
+The pnpm workspace file approves the native builds required by `better-sqlite3` and `esbuild`.
 
 ## Run
 

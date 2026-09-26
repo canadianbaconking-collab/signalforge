@@ -36,6 +36,7 @@ Before this tranche, HN/Reddit/GitHub ingestion was real but recency depended on
 - `pnpm run build`: TypeScript compile passes.
 - `pnpm run smoke`: 42 original offline checks pass.
 - `pnpm run test:evidence`: window/timestamp rejection, URL deduplication, shared-primary echoes, independent support, counter-evidence, revalidation, collector failure, stable evidence hash and artifacts, changed-evidence run IDs, operator annotations, decision linkage, and outcome history pass.
+- Fresh `pnpm install --frozen-lockfile` with only the required dependency builds approved, followed by build and both test suites, passes.
 - Live collector checks were not run in this tranche. Public API behavior and rate-limit handling need a later live validation pass.
 
 ## Exact next tranche
