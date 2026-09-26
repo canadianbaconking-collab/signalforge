@@ -495,30 +495,13 @@ function slugify(value: string): string {
     .slice(0, 40) || "run";
 }
 
-function normalizeQuery(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
 function buildRunId(options: RunOptions, runDate: string, sources: string[], evidenceHash = ""): string {
-  const normalizedQuery = normalizeQuery(options.query);
-  const windowDays = options.window_days ?? DEFAULT_WINDOW;
-  const target = options.target ?? DEFAULT_TARGET;
-  const mode = options.mode ?? "quick";
-  const topN = options.top_n ?? DEFAULT_TOP_N;
-  const normalizedSources = [...sources].map((source) => source.toLowerCase()).sort();
   const deterministic = options.deterministic ?? true;
   const nonce = deterministic ? "" : `|${crypto.randomUUID()}`;
   const payload = JSON.stringify({
-    query: normalizedQuery,
-    window_days: windowDays,
-    target,
-    mode,
-    sources: normalizedSources,
-    top_n: topN,
     run_date: runDate,
-    allow_t4: options.allow_t4 ?? DEFAULT_ALLOW_T4,
-    novelty_window_days: options.novelty_window_days ?? DEFAULT_NOVELTY_WINDOW_DAYS,
-    novelty_target_ratio: options.novelty_target_ratio ?? DEFAULT_NOVELTY_TARGET_RATIO,
+    requested_sources: sources,
+    options: persistedOptions(options),
     evidence_hash: evidenceHash
   });
 

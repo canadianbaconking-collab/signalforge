@@ -127,6 +127,9 @@ test("collector failure, immutable artifacts, decision linkage, and outcome hist
     assert.notEqual(changed.run_id, first.run_id);
     assert.ok(fs.existsSync(first.artifacts.evidence));
     assert.ok(fs.existsSync(changed.artifacts.evidence));
+    const differentlySpelled = await runEngine({ ...options, query: "TOOL X SAFETY" });
+    assert.notEqual(differentlySpelled.run_id, first.run_id);
+    assert.ok(fs.existsSync(first.artifacts.run));
 
     const annotated = await runEngine({
       ...options,
