@@ -222,6 +222,20 @@
     </div>
 
     <div class="panel">
+      <strong>Evidence comparison and decision brief</strong>
+      <p>Choose two stored evidence artifacts. Source failures and rejected observations remain visible in the result.</p>
+      <div class="row"><div><label for="fromArtifact">Earlier artifact</label><select id="fromArtifact"></select></div>
+      <div><label for="toArtifact">Later artifact</label><select id="toArtifact"></select></div></div>
+      <button id="refreshArtifacts" class="secondary">Refresh artifacts</button>
+      <button id="compareArtifacts">Compare</button>
+      <label for="decisionQuestion">Decision question</label><input id="decisionQuestion" placeholder="What decision does this evidence inform?" />
+      <button id="createBrief">Create decision brief</button>
+      <div class="status" id="comparisonStatus"></div>
+      <div id="comparisonDetail" class="review-observation"></div>
+      <div id="briefDetail" class="review-observation"></div>
+    </div>
+
+    <div class="panel">
       <label for="output">Context Block Output</label>
       <textarea id="output" readonly></textarea>
     </div>

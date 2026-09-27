@@ -6,6 +6,8 @@ The historical implementation directory is [last30-engine](last30-engine/README.
 
 See [PROJECT_STATE.md](PROJECT_STATE.md) for the current architecture, contracts, gaps, and exact next tranche.
 
+The local UI now lists stored collection and review artifacts for evidence comparison and decision brief inspection. `GET /evidence-artifacts` returns the latest 200 artifact entries; `POST /compare` and `POST /decision-snapshot` store content-addressed derived artifacts. Live collection never substitutes synthetic responses after a source failure; offline collector tests use synthetic API-shaped fixtures. The web source remains an explicitly selected, flagged mock.
+
 Default runs use HN, Reddit, GitHub issues, and GitHub releases. Mock web data is opt-in and visibly flagged; failed live requests never silently substitute it. Collector cassette tests cover parsing, malformed timestamps, rate limits, and preservation of partial results.
 
 Verify from the repository root:

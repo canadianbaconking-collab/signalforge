@@ -410,3 +410,66 @@ copyButton.addEventListener("click", copyContextBlock);
 copySummaryButton.addEventListener("click", copySummary);
 copyPromptPackButton.addEventListener("click", copyPromptPack);
 presetSelect.addEventListener("change", applyPreset);
+
+let currentComparison = null;
+const comparisonStatus = document.getElementById("comparisonStatus");
+function showArtifactDetail(element, title, data) {
+  element.replaceChildren();
+  const heading = document.createElement("strong");
+  heading.textContent = title;
+  const content = document.createElement("pre");
+  content.style.whiteSpace = "pre-wrap";
+  content.style.overflowWrap = "anywhere";
+  content.textContent = JSON.stringify(data, null, 2);
+  element.append(heading, content);
+}
+async function artifactRequest(url, body) {
+  const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+  return result;
+}
+async function refreshArtifactChoices() {
+  try {
+    const response = await fetch("/evidence-artifacts");
+    if (!response.ok) throw new Error(`Artifact index failed (${response.status})`);
+    const artifacts = await response.json();
+    for (const id of ["fromArtifact", "toArtifact"]) {
+      const select = document.getElementById(id);
+      const selected = select.value;
+      select.replaceChildren();
+      for (const artifact of artifacts) {
+        const option = document.createElement("option");
+        option.value = artifact.artifact_id;
+        option.textContent = `${artifact.recorded_at} · ${artifact.origin} · ${artifact.query} · ${shortRunId(artifact.artifact_id)}`;
+        select.append(option);
+      }
+      if (artifacts.some(a => a.artifact_id === selected)) select.value = selected;
+      else if (id === "fromArtifact" && artifacts.length > 1) select.selectedIndex = 1;
+    }
+    comparisonStatus.textContent = artifacts.length ? `${artifacts.length} stored artifacts` : "No stored artifacts yet. Run a collection first.";
+  } catch (error) { comparisonStatus.textContent = error.message; }
+}
+document.getElementById("refreshArtifacts").addEventListener("click", refreshArtifactChoices);
+document.getElementById("compareArtifacts").addEventListener("click", async () => {
+  try {
+    currentComparison = await artifactRequest("/compare", {
+      from_artifact_id: document.getElementById("fromArtifact").value,
+      to_artifact_id: document.getElementById("toArtifact").value
+    });
+    showArtifactDetail(document.getElementById("comparisonDetail"), `Comparison ${currentComparison.comparison_id}`, currentComparison);
+    comparisonStatus.textContent = "Comparison stored. Review source flags before interpreting missing evidence.";
+  } catch (error) { comparisonStatus.textContent = error.message; }
+});
+document.getElementById("createBrief").addEventListener("click", async () => {
+  try {
+    const evidence_artifact_id = document.getElementById("toArtifact").value;
+    const question = document.getElementById("decisionQuestion").value.trim();
+    if (!question) throw new Error("Enter a decision question.");
+    const comparison_id = currentComparison?.to_artifact_id === evidence_artifact_id ? currentComparison.comparison_id : undefined;
+    const brief = await artifactRequest("/decision-snapshot", { evidence_artifact_id, question, comparison_id });
+    showArtifactDetail(document.getElementById("briefDetail"), `Decision brief ${brief.snapshot_id}`, brief);
+    comparisonStatus.textContent = "Decision brief stored. Copy its ID to cite the exact evidence in a decision.";
+  } catch (error) { comparisonStatus.textContent = error.message; }
+});
+refreshArtifactChoices();

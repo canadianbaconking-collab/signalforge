@@ -68,8 +68,12 @@ Built a pure comparator over verified schema-v1/v2 evidence snapshots, a determi
 
 ## Exact next tranche
 
-1. Add a compact UI for choosing two stored artifacts, inspecting their comparison, and opening the decision brief; keep provenance and rejection detail prominent. Add a run/artifact index API if needed. Extend the brief with explicit alternatives and falsification/revisit criteria supplied by the operator, without automatic recommendation.
+1. Extend the decision brief with explicit alternatives and falsification/revisit criteria supplied by the operator, without automatic recommendation. Refine the comparison UI's structured presentation of provenance and rejection details.
 2. Add an artifact manifest/signature option and a documented migration/versioning policy for evidence schema, derived schemas, and SQLite. Preserve deterministic replay and old artifact readability.
 3. After enough decision/outcome pairs exist, build personal pattern detection and confidence/outcome calibration. Do not infer predictive confidence from the present heuristic score.
 
 Collector follow-up: run live validation when appropriate; carry explicit reference time into live collector contracts if historical collection is needed; retain per-item Reddit/GitHub rejection diagnostics. A real-web collector remains optional future scope, not completed work.
+
+## Artifact inspection UI tranche — 2026-09-27
+
+Added `GET /evidence-artifacts`, a bounded index of stored collection and review artifact IDs with run, query, timestamp, and origin. The UI can choose two artifacts, store and inspect their exact comparison, and create/open a decision brief tied to the target artifact (and matching comparison when selected). Full comparison and brief JSON is rendered as text so flags, provenance, rejected observations, and IDs remain inspectable. This is an inspection surface, not a decision recommendation. Synthetic API-shaped fixtures remain confined to tests; the opt-in web mock remains flagged.

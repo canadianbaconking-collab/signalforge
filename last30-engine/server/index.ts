@@ -21,6 +21,19 @@ app.use(express.static(uiPath));
 
 app.post("/run", runRoute);
 
+app.get("/evidence-artifacts", (_req, res) => {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT artifact_id, id AS run_id, query, created_at AS recorded_at, 'collection' AS origin
+    FROM runs WHERE artifact_id IS NOT NULL
+    UNION ALL
+    SELECT e.artifact_id, e.run_id, r.query, e.recorded_at, 'review' AS origin
+    FROM review_events e JOIN runs r ON r.id = e.run_id
+    ORDER BY recorded_at DESC, artifact_id DESC LIMIT 200
+  `).all();
+  res.json(rows);
+});
+
 app.post("/compare", (req, res) => {
   try {
     if (typeof req.body?.from_artifact_id !== "string" || typeof req.body?.to_artifact_id !== "string") {
