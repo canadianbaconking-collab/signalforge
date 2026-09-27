@@ -57,6 +57,7 @@ test("review candidates, auditable changes, evidence lineage, conflicts, and dec
   assert.equal(current.snapshot.rejected.length, 1);
   assert.equal(current.snapshot.claims.length, 1);
   assert.equal(current.snapshot.claims[0].status, "contested");
+  assert.equal(current.ranked_claims[0].status, "contested");
   assert.ok(current.snapshot.flags.includes("CONTRADICTORY_EVIDENCE"));
   assert.equal(current.snapshot.accepted.find(x=>x.url===supportUrl).incentives, "Sells the tool");
   assert.deepEqual(current.snapshot.accepted.find(x=>x.url===supportUrl).channels, ["blog", "newsletter"]);
@@ -85,6 +86,8 @@ test("review candidates, auditable changes, evidence lineage, conflicts, and dec
   const revised = getReview(run.run_id);
   assert.equal(revised.history.length, 2);
   assert.equal(revised.snapshot.claims[0].status, "single_origin");
+  assert.equal(revised.ranked_claims[0].status, "single_origin");
+  assert.ok(revised.ranked_claims[0].score > current.ranked_claims[0].score);
   assert.equal(revised.history[1].parent_artifact_id, first.artifact_id);
   assert.notEqual(second.artifact_id, first.artifact_id);
   assert.equal(getReview(run.run_id, first.artifact_id).snapshot.claims[0].status, "contested");

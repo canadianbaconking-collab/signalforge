@@ -21,6 +21,7 @@ pnpm run smoke
 pnpm run test:evidence
 pnpm run test:collectors
 pnpm run test:reviews
+pnpm run test:canonical
 ```
 
 The 42 legacy smoke checks and the adversarial evidence tests run offline using collector overrides. The 11 collector tests replay synthetic API response cassettes through the real parsers with network access replaced; they also verify default-run evidence artifacts and partial failure flags. These are authored fixtures, not captured live responses. Set `SIGNALFORGE_LIVE_SMOKE=1` only when you want an optional live Hacker News check.
@@ -56,13 +57,19 @@ Annotations are explicit operator judgments, matched to collector URLs exactly. 
 
 The response retains `run_id`, `integrity_score`, `flags`, `artifacts`, `context_block_text`, and run telemetry. Artifacts under `runs/YYYY-MM-DD/<slug>/` include `run`, `sources`, `summary`, `context_block`, and the new `evidence` snapshot. The evidence snapshot lists accepted/rejected observations, claim and family IDs, support and counter-evidence, conflict status, revalidation date, and its SHA-256 `artifact_id`. `run_id` includes the evidence hash so changed observations do not overwrite prior artifacts.
 
-`allow_t4` is retained for legacy timestamp telemetry and its integrity component, but missing/invalid timestamps never enter the adjudicated evidence set, ranking, context claims, or history. Live runs reject future observations against actual collection time; explicit historical `run_date` replays use that UTC day's end as the reference time.
+`allow_t4` is retained for legacy collection telemetry only; missing/invalid timestamps never enter adjudicated evidence, ranking, numeric integrity, context claims, or canonical history. Live runs reject future observations against actual collection time; explicit historical `run_date` replays use that UTC day's end as the reference time.
+
+## Canonical ranking and integrity
+
+Only accepted evidence enters numeric integrity and triage ranking. Items share `idea_cluster_id` only when the canonical snapshot assigns the same `claim_id`; exact-title fallback remains conservative until an operator supplies a shared key. A source type (including GitHub) and a new domain cannot themselves corroborate a claim. Explicit primary URLs or originators define known families. The triage score rewards corroborated claims and penalizes contested or unassessed claims, known-family echoes, unverified dependence, aging observations, inferred timestamps, and the opt-in mock web source. It is an ordering hint, not a probability.
+
+Compatibility names in `sources.json`, SQLite, and run telemetry have new canonical meanings: `idea_cluster_id` is the claim ID, `origin_count` counts identified families, `evidence_grade` is claim status, and `echo_risk` counts repeated known-family evidence. No independent-support conclusion can be inferred from `origin_count` alone; consult `evidence.json` for support/counter families. The five integrity components are admitted timestamp quality (30), admitted observation volume (25), verified independent support (20), adjudicated claim status (15), and prior admitted canonical baseline anchors (10). Collection failures remain explicit flags, not numeric input. `run.json` records ranking and integrity policy version 2, included in the run ID. Old token-signature history is not mapped into canonical claim IDs, so baseline/novelty tracking restarts on policy-v2 runs. Old artifacts and decisions remain readable.
 
 ## Canonical claim review
 
 The UI opens a Claim review panel after a run. Select a candidate claim, inspect its exact observation URL, then edit the claim key, stance, primary URL, originator ID, incentives, or distribution channels. A rationale is required. Shared claim keys group exact propositions; an explicit `supports` or `refutes` stance is needed for support or counter-evidence. Blank provenance fields remain unknown. The panel shows the latest artifact ID and event count.
 
-`GET /review/:run_id` returns the latest evidence snapshot, candidate clusters with observations, and ordered audit events. Supply `?artifact_id=evidence:...` to read an earlier snapshot, including the original. `POST /review/:run_id` accepts an optimistic base artifact and URL-exact edits:
+`GET /review/:run_id` returns the latest evidence snapshot, candidate clusters with observations, deterministic `ranked_claims` for that exact snapshot, and ordered audit events. Supply `?artifact_id=evidence:...` to read an earlier snapshot, including the original. `POST /review/:run_id` accepts an optimistic base artifact and URL-exact edits:
 
 ```json
 {
@@ -82,7 +89,7 @@ The UI opens a Claim review panel after a run. Select a candidate claim, inspect
 
 Only supplied annotation fields change. Use `null` to clear string fields, `unassessed` or `null` to clear stance, and `[]` to clear channels. Accepted URLs must match the stored snapshot exactly. A stale base yields HTTP 409, invalid annotations HTTP 400, and an unknown run HTTP 404. A successful review returns a review event ID and new `artifact_id`. Original snapshots remain immutable (schema version 1); reviewed snapshots use schema version 2 and preserve rejected observations and collector flags. No collector is re-run. The append-only SQLite audit records rationale, edits, parent and resulting artifact IDs, and time; it is not externally signed.
 
-Review recomputes canonical claim and family status only. The original run's ranking, integrity score, context block, summary, and `run_id` remain historical outputs, as the UI notes.
+Review recomputes canonical claim/family status and the read-only `ranked_claims` projection. The original run's integrity score, context block, summary, novelty selection, and `run_id` remain historical outputs, as the UI notes.
 
 ## Decision and outcome records
 

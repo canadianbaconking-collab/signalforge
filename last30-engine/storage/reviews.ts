@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { EvidenceRecord, EvidenceSnapshot, reviewEvidenceSnapshot } from "../engine/evidence/adjudicate";
 import { getDb } from "./db";
+import { rankSnapshot } from "../engine/ranking/claimRanking";
 
 type ReviewEdit = {
   url: string;
@@ -50,7 +51,7 @@ export function getReview(runId: string, artifactId?: string): unknown {
   }
   return {
     run_id: runId, original_artifact_id: original.artifact_id, latest_artifact_id: latest,
-    snapshot, history: events,
+    snapshot, history: events, ranked_claims: rankSnapshot(snapshot),
     candidates: snapshot.claims.map((claim) => ({
       ...claim,
       observations: snapshot.accepted.filter((record) => record.claim_id === claim.claim_id)

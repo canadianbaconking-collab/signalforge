@@ -156,6 +156,7 @@ export function fetchBaselineItems(
         AND items.published_at IS NOT NULL
         AND items.published_at < ?
         AND runs.created_at >= ?
+        AND runs.evidence_json IS NOT NULL
       ORDER BY items.published_at DESC`
     )
     .all(ideaClusterId, baselineCutoff, lookbackCutoff) as BaselineItemRecord[];
@@ -193,6 +194,7 @@ export function getClusterHistory(
       INNER JOIN runs ON runs.id = items.run_id
       WHERE items.idea_cluster_id = ?
         AND runs.id <> ?
+        AND runs.evidence_json IS NOT NULL
         AND COALESCE(items.published_at, runs.created_at) >= ?
         AND COALESCE(items.published_at, runs.created_at) <= ?`
     )

@@ -69,6 +69,8 @@ const DEFAULT_TARGET: "gpt" | "codex" = "gpt";
 const DEFAULT_TOP_N = 10;
 const DEFAULT_ALLOW_T4 = true;
 const RUN_ID_HASH_LENGTH = 10;
+const RANKING_POLICY_VERSION = 2;
+const INTEGRITY_POLICY_VERSION = 2;
 const DEFAULT_BASELINE_LOOKBACK_DAYS = 180;
 const DEFAULT_NOVELTY_WINDOW_DAYS = 30;
 const DEFAULT_NOVELTY_TARGET_RATIO = 0.25;
@@ -113,7 +115,6 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   }));
   const timestampTierCounts = countTimestampTiers(timestamped);
   const { kept: policyKept, excludedT4 } = applyTimestampPolicy(timestamped, allowT4);
-  const integrityTimestampCounts = countTimestampTiers(policyKept);
   const perSourceCounts = countBySource(policyKept);
   for (const source of requestedSources) {
     if (perSourceCounts[source] === undefined) {
@@ -130,7 +131,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     source: item.source,
     timestamp_tier: item.timestamp_tier
   })));
-  const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered);
+  const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered, evidence);
   const noveltyWindowDays = options.novelty_window_days ?? DEFAULT_NOVELTY_WINDOW_DAYS;
   const noveltyTargetRatio = options.novelty_target_ratio ?? DEFAULT_NOVELTY_TARGET_RATIO;
   const scored = scoreItems(ideaClustered);
@@ -147,19 +148,10 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const ideaTelemetry = buildIdeaTelemetry(ideaClusters);
   const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), evidence.flags);
   const integrityResult = calculateIntegrityScore({
-    timestamp_tier_counts: integrityTimestampCounts,
-    flags,
-    kept: policyKept.length,
-    echo_risk_stats: ideaTelemetry.echo_risk_stats,
-    evidence_grade_counts: ideaTelemetry.evidence_grade_counts,
+    evidence,
     baseline: {
       clusters_with_baseline: baselineTelemetry.clusters_with_baseline,
       top_claim_clusters_count: ideaTelemetry.idea_cluster_count
-    },
-    adjudication: {
-      contested_claims: evidence.claims.filter((claim) => claim.status === "contested").length,
-      dependence_unverified_claims: evidence.claims.filter((claim) => claim.dependence_unverified).length,
-      total_claims: evidence.claims.length
     }
   });
   const mergedFlags = mergeFlags(mergeFlags(flags, integrityResult.flags), noveltySelection.quotaUnmet ? ["NOVELTY_QUOTA_UNMET"] : []);
@@ -417,6 +409,8 @@ function writeArtifacts(
       options: persistedOptions(options),
       artifact_id: evidence.artifact_id,
       evidence_hash: evidence.evidence_hash,
+      ranking_policy_version: RANKING_POLICY_VERSION,
+      integrity_policy_version: INTEGRITY_POLICY_VERSION,
       evidence_counts: {
         accepted: evidence.accepted.length,
         rejected: evidence.rejected.length,
@@ -502,7 +496,9 @@ function buildRunId(options: RunOptions, runDate: string, sources: string[], evi
     run_date: runDate,
     requested_sources: sources,
     options: persistedOptions(options),
-    evidence_hash: evidenceHash
+    evidence_hash: evidenceHash,
+    ranking_policy_version: RANKING_POLICY_VERSION,
+    integrity_policy_version: INTEGRITY_POLICY_VERSION
   });
 
   const hash = crypto.createHash("sha256").update(`${payload}${nonce}`).digest("hex");

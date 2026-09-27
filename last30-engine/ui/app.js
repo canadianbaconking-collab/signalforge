@@ -298,10 +298,14 @@ async function loadReview(runId) {
   claimSelect.replaceChildren();
   const keys = document.getElementById("reviewClaimKeys");
   keys.replaceChildren();
-  for (const claim of reviewData.candidates) {
+  const rankByClaim = new Map(reviewData.ranked_claims.map((claim) => [claim.claim_id, claim]));
+  const rankedCandidates = [...reviewData.candidates].sort((a, b) =>
+    (rankByClaim.get(b.claim_id)?.score ?? 0) - (rankByClaim.get(a.claim_id)?.score ?? 0) ||
+    a.claim_id.localeCompare(b.claim_id));
+  for (const claim of rankedCandidates) {
     const option = document.createElement("option");
     option.value = claim.claim_id;
-    option.textContent = `${claim.label} — ${claim.status} (${claim.observations.length})`;
+    option.textContent = `${claim.label} — ${claim.status}, triage ${rankByClaim.get(claim.claim_id)?.score ?? "?"} (${claim.observations.length})`;
     claimSelect.append(option);
     const suggestion = document.createElement("option");
     suggestion.value = reviewData.snapshot.accepted.find(item => item.claim_id === claim.claim_id)?.claim_key || claim.label;

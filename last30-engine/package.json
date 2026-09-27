@@ -10,7 +10,8 @@
     "smoke": "node tests/smoke.js",
     "test:evidence": "node --test tests/evidence.js",
     "test:collectors": "node --test tests/collectors.js",
-    "test:reviews": "node --test tests/reviews.js"
+    "test:reviews": "node --test tests/reviews.js",
+    "test:canonical": "node --test tests/canonical.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",
