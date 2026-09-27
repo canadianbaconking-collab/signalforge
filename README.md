@@ -5,3 +5,18 @@ SignalForge is a local-first Frosted//Logic Intelligence Instrument for inspecti
 The historical implementation directory is [last30-engine](last30-engine/README.md). Its name is retained to preserve the existing code and tests.
 
 See [PROJECT_STATE.md](PROJECT_STATE.md) for the current architecture, contracts, gaps, and exact next tranche.
+
+Default runs use HN, Reddit, GitHub issues, and GitHub releases. Mock web data is opt-in and visibly flagged; failed live requests never silently substitute it. Collector cassette tests cover parsing, malformed timestamps, rate limits, and preservation of partial results.
+
+Verify from the repository root:
+
+```bash
+cd last30-engine
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm run smoke
+pnpm run test:evidence
+pnpm run test:collectors
+```
+
+These checks are offline. They do not establish current live API availability.

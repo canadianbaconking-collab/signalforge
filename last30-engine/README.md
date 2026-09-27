@@ -19,13 +19,18 @@ Open http://localhost:8787. For development, `pnpm run dev` runs the TypeScript 
 pnpm run build
 pnpm run smoke
 pnpm run test:evidence
+pnpm run test:collectors
 ```
 
-The 42 legacy smoke checks and the adversarial evidence tests run offline using collector overrides. Set `SIGNALFORGE_LIVE_SMOKE=1` only when you want an optional live Hacker News check.
+The 42 legacy smoke checks and the adversarial evidence tests run offline using collector overrides. The 11 collector tests replay synthetic API response cassettes through the real parsers with network access replaced; they also verify default-run evidence artifacts and partial failure flags. These are authored fixtures, not captured live responses. Set `SIGNALFORGE_LIVE_SMOKE=1` only when you want an optional live Hacker News check.
 
 ## Run contract
 
-`POST /run` accepts `query`, `window_days`, `target`, `mode`, `sources`, `top_n`, and optional URL-keyed `annotations`. Supported sources are `hn`, `reddit`, `github_issue`, `github_release`, and `web`. `web` is still a mock collector and sets `WEB_MOCK_SOURCE`.
+`POST /run` accepts `query`, `window_days`, `target`, `mode`, `sources`, `top_n`, and optional URL-keyed `annotations`. Supported sources are `hn`, `reddit`, `github_issue`, `github_release`, and `web`. Omitting `sources` selects `reddit`, `hn`, `github_issue`, and `github_release`, matching the UI default. `web` is an explicit demo-only mock collector and sets `WEB_MOCK_SOURCE`; it is absent from defaults and presets.
+
+Reddit failures return no items and `REDDIT_FETCH_FAILED`; the former mock-backed web fallback has been removed. GitHub searches issues and releases independently, preserves successful repositories, and continues after a repository fails; any partial failure sets `GITHUB_FETCH_FAILED`. HN invalid timestamps remain null for canonical rejection without dropping valid siblings; Reddit invalid timestamps increment `excluded_missing_timestamp`, and GitHub invalid timestamps are excluded. Malformed response envelopes fail explicitly. Retries remain bounded (HN three attempts, Reddit two, GitHub two for transport errors); this is not an adaptive rate-limit scheduler.
+
+Collector-side Reddit/release windows and GitHub search cutoffs still use collection wall time. Historical `run_date` determinism requires fixed collector inputs; live collection is not a historical replay mechanism.
 
 ```json
 {

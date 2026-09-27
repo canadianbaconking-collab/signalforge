@@ -1,0 +1,27 @@
+{
+  "hn": {"hits": [
+    {"objectID":"101","title":" Valid story ","url":"https://example.org/story","story_text":"<p>Useful   evidence</p>","created_at_i":1790424000},
+    {"objectID":"102","title":"Bad date","created_at":"not-a-date"},
+    {"objectID":"103","title":"Huge epoch","created_at_i":1e100},
+    {"objectID":"104","title":"Missing date"}
+  ]},
+  "reddit": {"data":{"children":[
+    {"data":{"title":"Valid post","permalink":"/r/test/comments/one","selftext":" A report ","created_utc":1790424000}},
+    {"data":{"title":"Invalid timestamp","created_utc":"yesterday"}},
+    {"data":{"title":"Out of range","created_utc":1e100}},
+    {"data":{"title":"Missing timestamp"}},
+    {"data":{"title":"Old","created_utc":1700000000}},
+    {"data":{"title":"Future","created_utc":1900000000}}
+  ]}},
+  "issues":{"items":[
+    {"title":"Valid issue","html_url":"https://github.com/test/one/issues/1","body":" Evidence\ntext ","created_at":"2026-09-26T12:00:00Z"},
+    {"title":"Bad date","created_at":"invalid"},
+    {"title":"Missing date","created_at":null}
+  ]},
+  "repos":{"items":[{"full_name":"test/one"},{"full_name":"test/two"},{"full_name":"test/three"}]},
+  "releases":[
+    {"name":null,"tag_name":"v1","html_url":"https://github.com/test/one/releases/tag/v1","body":"Release notes","published_at":"2026-09-26T12:00:00Z"},
+    {"name":"Bad date","published_at":"invalid"},
+    {"name":"Missing date","published_at":null}
+  ]
+}

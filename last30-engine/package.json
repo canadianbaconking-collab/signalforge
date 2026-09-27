@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/server/index.js",
     "smoke": "node tests/smoke.js",
-    "test:evidence": "node --test tests/evidence.js"
+    "test:evidence": "node --test tests/evidence.js",
+    "test:collectors": "node --test tests/collectors.js"
   },
   "dependencies": {
     "better-sqlite3": "^12.5.0",

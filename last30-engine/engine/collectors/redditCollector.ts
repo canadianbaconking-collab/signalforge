@@ -1,5 +1,4 @@
 import { isWithinWindow } from "../ranking/timestampTier";
-import { webCollector } from "./webCollector";
 import { CollectedItem } from "./types";
 
 export type RedditCollectorResult = {
@@ -13,7 +12,6 @@ const REDDIT_BASE_URL = "https://www.reddit.com";
 const USER_AGENT = "SignalForge/0.1 (local instrument)";
 const REQUEST_TIMEOUT_MS = 8000;
 const RETRY_ATTEMPTS = 2;
-const FALLBACK_URL_LIMIT = 5;
 
 export async function redditCollector(
   query: string,
@@ -31,7 +29,8 @@ export async function redditCollector(
       excluded_missing_timestamp: excludedMissingTimestamp
     };
   } catch (error) {
-    return fallbackToWebSearch(query, windowDays);
+    // Never substitute mock web observations for a failed live API.
+    return { items: [], failed: true, strategy_used: "reddit_json", excluded_missing_timestamp: 0 };
   }
 }
 
@@ -64,23 +63,25 @@ function parseSearchResults(
   windowDays: number
 ): { items: CollectedItem[]; excludedMissingTimestamp: number } {
   const listing = json as { data?: { children?: Array<{ data?: RedditListingData }> } };
-  const children = listing.data?.children ?? [];
+  const children = listing?.data?.children;
+  if (!Array.isArray(children)) throw new Error("Invalid Reddit listing response");
   let excludedMissingTimestamp = 0;
   const items = children.flatMap((child) => {
-    const data = child.data;
-    if (!data?.created_utc) {
+    const data = child?.data;
+    const date = new Date(typeof data?.created_utc === "number" ? data.created_utc * 1000 : NaN);
+    if (Number.isNaN(date.getTime())) {
       excludedMissingTimestamp += 1;
       return [];
     }
-    const publishedAt = new Date(data.created_utc * 1000).toISOString();
+    const publishedAt = date.toISOString();
     if (!isWithinWindow(publishedAt, windowDays)) {
       return [];
     }
     return [
       {
-        title: data.title ?? "",
-        url: `${REDDIT_BASE_URL}${data.permalink ?? ""}`,
-        snippet: (data.selftext ?? "").trim(),
+        title: data!.title ?? "",
+        url: `${REDDIT_BASE_URL}${data!.permalink ?? ""}`,
+        snippet: (data!.selftext ?? "").trim(),
         published_at: publishedAt,
         source: "reddit",
         timestamp_basis: "platform" as const
@@ -89,81 +90,6 @@ function parseSearchResults(
   });
 
   return { items, excludedMissingTimestamp };
-}
-
-async function fallbackToWebSearch(query: string, windowDays: number): Promise<RedditCollectorResult> {
-  const fallbackItems = webCollector(query)
-    .filter((item) => item.url.includes("reddit.com"))
-    .slice(0, FALLBACK_URL_LIMIT);
-
-  if (fallbackItems.length === 0) {
-    return {
-      items: [],
-      failed: true,
-      strategy_used: "web_fallback",
-      excluded_missing_timestamp: 0
-    };
-  }
-
-  const items: CollectedItem[] = [];
-  let excludedMissingTimestamp = 0;
-  let hadSuccessfulFetch = false;
-
-  for (const item of fallbackItems) {
-    const jsonUrl = buildRedditJsonUrl(item.url);
-    try {
-      const json = await fetchJson(jsonUrl);
-      hadSuccessfulFetch = true;
-      const parsed = parseThreadJson(json);
-      if (!parsed) {
-        excludedMissingTimestamp += 1;
-        continue;
-      }
-      if (isWithinWindow(parsed.published_at, windowDays)) {
-        items.push(parsed);
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  return {
-    items,
-    failed: !hadSuccessfulFetch,
-    strategy_used: "web_fallback",
-    excluded_missing_timestamp: excludedMissingTimestamp
-  };
-}
-
-function buildRedditJsonUrl(url: string): string {
-  const redditUrl = new URL(url);
-  let pathname = redditUrl.pathname.replace(/\/$/, "");
-  if (!pathname.endsWith(".json")) {
-    pathname = `${pathname}.json`;
-  }
-  redditUrl.pathname = pathname;
-  redditUrl.search = "";
-  return redditUrl.toString();
-}
-
-function parseThreadJson(json: unknown): CollectedItem | null {
-  if (!Array.isArray(json)) {
-    return null;
-  }
-  const listing = json[0] as { data?: { children?: Array<{ data?: RedditListingData }> } };
-  const data = listing?.data?.children?.[0]?.data;
-  if (!data?.created_utc) {
-    return null;
-  }
-  const publishedAt = new Date(data.created_utc * 1000).toISOString();
-  return {
-    title: data.title ?? "",
-    url: `${REDDIT_BASE_URL}${data.permalink ?? ""}`,
-    snippet: (data.selftext ?? "").trim(),
-    published_at: publishedAt,
-    source: "reddit",
-    timestamp_basis: "platform"
-  };
 }
 
 async function fetchJson(url: string): Promise<unknown> {

@@ -80,7 +80,7 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const windowDays = options.window_days ?? DEFAULT_WINDOW;
   const target = options.target ?? DEFAULT_TARGET;
   const mode = options.mode ?? "quick";
-  const requestedSources = options.sources ?? ["reddit", "web", "hn"];
+  const requestedSources = options.sources ?? ["reddit", "hn", "github_issue", "github_release"];
   const allowT4 = options.allow_t4 ?? DEFAULT_ALLOW_T4;
   const limit = options.top_n ?? DEFAULT_TOP_N;
   const baselineLookbackDays = options.baseline_lookback_days ?? DEFAULT_BASELINE_LOOKBACK_DAYS;

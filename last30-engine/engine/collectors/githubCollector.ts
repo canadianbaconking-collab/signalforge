@@ -45,17 +45,21 @@ export async function githubCollector(
   const headers = buildHeaders();
   const items: CollectedItem[] = [];
 
+  let failed = false;
   try {
-    const issues = await fetchIssues(query, sinceDate, Math.max(1, limit), headers);
-    items.push(...issues);
-
-    const releases = await fetchReleases(query, windowDays, headers);
-    items.push(...releases);
-
-    return { items, failed: false };
-  } catch (error) {
-    return { items, failed: true };
+    items.push(...await fetchIssues(query, sinceDate, Math.max(1, limit), headers));
+  } catch {
+    failed = true;
   }
+  // Independent endpoints and repositories retain their successful observations.
+  try {
+    const releases = await fetchReleases(query, windowDays, headers);
+    items.push(...releases.items);
+    failed ||= releases.failed;
+  } catch {
+    failed = true;
+  }
+  return { items, failed };
 }
 
 async function fetchIssues(
@@ -74,7 +78,8 @@ async function fetchIssues(
   const url = `${GITHUB_API_BASE}/search/issues?${searchParams.toString()}`;
   const data = await fetchJson<GithubSearchResponse<GithubIssue>>(url, headers);
 
-  return (data.items ?? [])
+  if (!Array.isArray(data?.items)) throw new Error("Invalid GitHub issues response");
+  return data.items
     .filter((issue) => Boolean(issue?.created_at) && !Number.isNaN(Date.parse(issue.created_at)))
     .map((issue) => ({
       title: issue.title,
@@ -90,7 +95,7 @@ async function fetchReleases(
   query: string,
   windowDays: number,
   headers: HeadersInit
-): Promise<CollectedItem[]> {
+): Promise<GithubCollectorResult> {
   const repoParams = new URLSearchParams({
     q: query,
     sort: "updated",
@@ -100,35 +105,42 @@ async function fetchReleases(
   const repoUrl = `${GITHUB_API_BASE}/search/repositories?${repoParams.toString()}`;
   const repoData = await fetchJson<GithubSearchResponse<GithubRepo>>(repoUrl, headers);
 
+  if (!Array.isArray(repoData?.items)) throw new Error("Invalid GitHub repositories response");
   const releases: CollectedItem[] = [];
-  for (const repo of repoData.items ?? []) {
-    if (!repo.full_name) {
+  let failed = false;
+  for (const repo of repoData.items.slice(0, DEFAULT_REPO_LIMIT)) {
+    if (!repo?.full_name) {
       continue;
     }
 
     const releaseUrl = `${GITHUB_API_BASE}/repos/${repo.full_name}/releases?per_page=${DEFAULT_RELEASE_LIMIT}`;
-    const releaseData = await fetchJson<GithubRelease[]>(releaseUrl, headers);
+    try {
+      const releaseData = await fetchJson<GithubRelease[]>(releaseUrl, headers);
+      if (!Array.isArray(releaseData)) throw new Error("Invalid GitHub releases response");
 
-    for (const release of releaseData ?? []) {
-      if (!release.published_at || Number.isNaN(Date.parse(release.published_at))) {
-        continue;
+      for (const release of releaseData.slice(0, DEFAULT_RELEASE_LIMIT)) {
+        if (!release?.published_at || Number.isNaN(Date.parse(release.published_at))) {
+          continue;
+        }
+        if (!isWithinWindow(release.published_at, windowDays)) {
+          continue;
+        }
+        const publishedAt = new Date(release.published_at).toISOString();
+        releases.push({
+          title: release.name || release.tag_name,
+          url: release.html_url,
+          snippet: buildSnippet(release.body),
+          published_at: publishedAt,
+          source: "github_release",
+          timestamp_basis: "platform"
+        });
       }
-      if (!isWithinWindow(release.published_at, windowDays)) {
-        continue;
-      }
-      const publishedAt = new Date(release.published_at).toISOString();
-      releases.push({
-        title: release.name || release.tag_name,
-        url: release.html_url,
-        snippet: buildSnippet(release.body),
-        published_at: publishedAt,
-        source: "github_release",
-        timestamp_basis: "platform"
-      });
+    } catch {
+      failed = true;
     }
   }
 
-  return releases;
+  return { items: releases, failed };
 }
 
 function buildHeaders(): HeadersInit {
