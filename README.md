@@ -17,6 +17,9 @@ pnpm run build
 pnpm run smoke
 pnpm run test:evidence
 pnpm run test:collectors
+pnpm run test:reviews
 ```
 
 These checks are offline. They do not establish current live API availability.
+
+After collecting a run, the claim review panel lists candidate claims and observations. Operator edits create new content-addressed evidence artifacts and append-only review events. Decisions can cite original or reviewed artifacts. See [the engine README](last30-engine/README.md) for the API contract. Review does not recalculate the original run score or context block.

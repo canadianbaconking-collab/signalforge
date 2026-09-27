@@ -48,3 +48,16 @@ CREATE TABLE IF NOT EXISTS items (
   timestamp_tier TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES runs(id)
 );
+
+CREATE TABLE IF NOT EXISTS review_events (
+  event_number INTEGER PRIMARY KEY AUTOINCREMENT,
+  review_id TEXT NOT NULL UNIQUE,
+  run_id TEXT NOT NULL REFERENCES runs(id),
+  parent_artifact_id TEXT NOT NULL,
+  artifact_id TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  edits_json TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS review_events_run_order ON review_events(run_id, event_number);

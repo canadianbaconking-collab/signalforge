@@ -9,6 +9,7 @@ const status = document.getElementById("status");
 const toast = document.getElementById("toast");
 
 let lastRunData = null;
+let reviewData = null;
 let toastTimeout = null;
 
 const PRESETS = {
@@ -203,6 +204,8 @@ async function runQuery() {
   setStatus("Running...");
   output.value = "";
   claimsPreview.value = "";
+  reviewData = null;
+  document.getElementById("reviewPanel").hidden = true;
   updateStatusPanel(null);
 
   try {
@@ -229,6 +232,7 @@ async function runQuery() {
     output.value = data.context_block_text || "";
     claimsPreview.value = extractTopClaims(output.value);
     updateStatusPanel(data);
+    await loadReview(data.run_id);
     setStatus(`Run complete: ${data.run_id}`);
   } catch (error) {
     setStatus(`Run failed: ${error.message}`);
@@ -283,7 +287,121 @@ function applyPreset() {
   setStatus(`Preset applied: ${presetSelect.options[presetSelect.selectedIndex].text}`);
 }
 
+
+async function loadReview(runId) {
+  const response = await fetch(`/review/${encodeURIComponent(runId)}`);
+  if (!response.ok) throw new Error("Could not load claim review");
+  reviewData = await response.json();
+  const panel = document.getElementById("reviewPanel");
+  panel.hidden = false;
+  const claimSelect = document.getElementById("reviewClaim");
+  claimSelect.replaceChildren();
+  const keys = document.getElementById("reviewClaimKeys");
+  keys.replaceChildren();
+  for (const claim of reviewData.candidates) {
+    const option = document.createElement("option");
+    option.value = claim.claim_id;
+    option.textContent = `${claim.label} — ${claim.status} (${claim.observations.length})`;
+    claimSelect.append(option);
+    const suggestion = document.createElement("option");
+    suggestion.value = reviewData.snapshot.accepted.find(item => item.claim_id === claim.claim_id)?.claim_key || claim.label;
+    keys.append(suggestion);
+  }
+  document.getElementById("reviewArtifact").textContent =
+    `Artifact: ${reviewData.snapshot.artifact_id} · ${reviewData.snapshot.rejected.length} rejected observations preserved`;
+  const history = document.getElementById("reviewHistory");
+  history.textContent = `${reviewData.history.length} recorded review event(s). Latest rationale: ${reviewData.history.at(-1)?.rationale || "none"}`;
+  renderReviewObservations();
+}
+
+function selectedObservation() {
+  return reviewData?.snapshot.accepted.find(item => item.url === document.getElementById("reviewObservation").value);
+}
+
+function renderReviewObservations() {
+  const claim = reviewData?.candidates.find(item => item.claim_id === document.getElementById("reviewClaim").value);
+  const select = document.getElementById("reviewObservation");
+  select.replaceChildren();
+  for (const observation of claim?.observations || []) {
+    const option = document.createElement("option");
+    option.value = observation.url;
+    option.textContent = `${observation.source}: ${observation.title}`;
+    select.append(option);
+  }
+  renderReviewDetail();
+}
+
+function renderReviewDetail() {
+  const item = selectedObservation();
+  const detail = document.getElementById("reviewDetail");
+  detail.replaceChildren();
+  if (!item) {
+    detail.textContent = "No accepted observations in this run.";
+    return;
+  }
+  const link = document.createElement("a");
+  link.href = item.url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = item.url;
+  detail.append(link);
+  const summary = document.createElement("p");
+  summary.textContent = `${item.source} · ${item.published_at} · ${item.timestamp_tier} · ${item.family_basis} family · ${item.metadata_origin} metadata`;
+  detail.append(summary);
+  document.getElementById("reviewClaimKey").value = item.claim_key;
+  document.getElementById("reviewStance").value = item.stance;
+  document.getElementById("reviewPrimaryUrl").value = item.primary_url || "";
+  document.getElementById("reviewOriginatorId").value = item.originator_id || "";
+  document.getElementById("reviewIncentives").value = item.incentives || "";
+  document.getElementById("reviewChannels").value = (item.channels || []).join(", ");
+  document.getElementById("reviewStatus").textContent = "";
+}
+
+async function saveReview() {
+  const item = selectedObservation();
+  const status = document.getElementById("reviewStatus");
+  if (!item) return;
+  const rationale = document.getElementById("reviewRationale").value.trim();
+  const edits = { url: item.url };
+  const textFields = [
+    ["claim_key", "reviewClaimKey"], ["primary_url", "reviewPrimaryUrl"],
+    ["originator_id", "reviewOriginatorId"], ["incentives", "reviewIncentives"]
+  ];
+  for (const [field, id] of textFields) {
+    const next = document.getElementById(id).value.trim();
+    const current = item[field] || "";
+    if (next !== current) edits[field] = next || null;
+  }
+  const stance = document.getElementById("reviewStance").value;
+  if (stance !== item.stance) edits.stance = stance;
+  const channels = [...new Set(document.getElementById("reviewChannels").value.split(",").map(x => x.trim()).filter(Boolean))].sort();
+  if (JSON.stringify(channels) !== JSON.stringify(item.channels || [])) edits.channels = channels;
+  if (!rationale || Object.keys(edits).length === 1) {
+    status.textContent = "Add a rationale and change at least one field.";
+    return;
+  }
+  status.textContent = "Recording review…";
+  try {
+    const response = await fetch(`/review/${encodeURIComponent(reviewData.run_id)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_artifact_id: reviewData.latest_artifact_id, rationale, edits: [edits] })
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || "Review failed");
+    }
+    await loadReview(reviewData.run_id);
+    document.getElementById("reviewRationale").value = "";
+    status.textContent = "Review saved. Decision records can cite the new artifact ID.";
+  } catch (error) {
+    status.textContent = `Review failed: ${error.message}`;
+  }
+}
+
 runButton.addEventListener("click", runQuery);
+document.getElementById("reviewClaim").addEventListener("change", renderReviewObservations);
+document.getElementById("reviewObservation").addEventListener("change", renderReviewDetail);
+document.getElementById("saveReviewButton").addEventListener("click", saveReview);
 copyButton.addEventListener("click", copyContextBlock);
 copySummaryButton.addEventListener("click", copySummary);
 copyPromptPackButton.addEventListener("click", copyPromptPack);

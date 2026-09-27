@@ -20,6 +20,7 @@ pnpm run build
 pnpm run smoke
 pnpm run test:evidence
 pnpm run test:collectors
+pnpm run test:reviews
 ```
 
 The 42 legacy smoke checks and the adversarial evidence tests run offline using collector overrides. The 11 collector tests replay synthetic API response cassettes through the real parsers with network access replaced; they also verify default-run evidence artifacts and partial failure flags. These are authored fixtures, not captured live responses. Set `SIGNALFORGE_LIVE_SMOKE=1` only when you want an optional live Hacker News check.
@@ -57,9 +58,35 @@ The response retains `run_id`, `integrity_score`, `flags`, `artifacts`, `context
 
 `allow_t4` is retained for legacy timestamp telemetry and its integrity component, but missing/invalid timestamps never enter the adjudicated evidence set, ranking, context claims, or history. Live runs reject future observations against actual collection time; explicit historical `run_date` replays use that UTC day's end as the reference time.
 
+## Canonical claim review
+
+The UI opens a Claim review panel after a run. Select a candidate claim, inspect its exact observation URL, then edit the claim key, stance, primary URL, originator ID, incentives, or distribution channels. A rationale is required. Shared claim keys group exact propositions; an explicit `supports` or `refutes` stance is needed for support or counter-evidence. Blank provenance fields remain unknown. The panel shows the latest artifact ID and event count.
+
+`GET /review/:run_id` returns the latest evidence snapshot, candidate clusters with observations, and ordered audit events. Supply `?artifact_id=evidence:...` to read an earlier snapshot, including the original. `POST /review/:run_id` accepts an optimistic base artifact and URL-exact edits:
+
+```json
+{
+  "base_artifact_id": "evidence:<sha256>",
+  "rationale": "Read the source and identified the shared study",
+  "edits": [{
+    "url": "https://example.org/article",
+    "claim_key": "Claim X",
+    "stance": "supports",
+    "primary_url": "https://example.org/study",
+    "originator_id": "lab-x",
+    "incentives": "Vendor-funded",
+    "channels": ["blog", "newsletter"]
+  }]
+}
+```
+
+Only supplied annotation fields change. Use `null` to clear string fields, `unassessed` or `null` to clear stance, and `[]` to clear channels. Accepted URLs must match the stored snapshot exactly. A stale base yields HTTP 409, invalid annotations HTTP 400, and an unknown run HTTP 404. A successful review returns a review event ID and new `artifact_id`. Original snapshots remain immutable (schema version 1); reviewed snapshots use schema version 2 and preserve rejected observations and collector flags. No collector is re-run. The append-only SQLite audit records rationale, edits, parent and resulting artifact IDs, and time; it is not externally signed.
+
+Review recomputes canonical claim and family status only. The original run's ranking, integrity score, context block, summary, and `run_id` remain historical outputs, as the UI notes.
+
 ## Decision and outcome records
 
-`POST /decision` requires `run_id`, the exact `artifact_id` from `evidence.json`, `question`, `choice`, `rationale`, and at least one `claim_id` from that snapshot. Decisions are immutable and idempotent by content.
+`POST /decision` requires `run_id`, an exact original or reviewed `artifact_id`, `question`, `choice`, `rationale`, and at least one `claim_id` from that snapshot. Decisions are immutable and idempotent by content.
 
 `POST /outcome` requires `decision_id`, ISO `observed_at`, integer `rating` from 0 to 5, and optional `notes` and `confounders`. Outcomes are append-only. `GET /decision/:id` returns the decision and its observations.
 

@@ -25,6 +25,10 @@ export type EvidenceRecord = {
   family_basis: "originator" | "primary_url" | "domain";
   primary_url: string | null;
   metadata_origin: "none" | "collector" | "operator";
+  /** Explicit review metadata; absent means unknown. */
+  originator_id?: string | null;
+  incentives?: string | null;
+  channels?: string[];
 };
 
 export type RejectedEvidence = EvidenceRecord & { reason: RejectionReason };
@@ -45,7 +49,7 @@ export type ClaimRecord = {
 };
 
 export type EvidenceSnapshot = {
-  schema_version: 1;
+  schema_version: 1 | 2;
   artifact_id: string;
   evidence_hash: string;
   run_date: string;
@@ -99,6 +103,61 @@ export function adjudicateEvidence(
     }
   }
 
+  return assembleSnapshot(runDate, reference, windowDays, accepted, rejected, collectorFlags, 1);
+}
+
+/** Re-adjudicate stored evidence without fetching again or changing rejected records. */
+export function reviewEvidenceSnapshot(
+  original: EvidenceSnapshot,
+  updates: Map<string, Partial<Pick<EvidenceRecord,
+    "claim_key" | "stance" | "primary_url" | "originator_id" | "incentives" | "channels">>>
+): EvidenceSnapshot {
+  const seen = new Set<string>();
+  const accepted = original.accepted.map((record) => {
+    const update = updates.get(record.url);
+    if (!update) return record;
+    seen.add(record.url);
+    const result: EvidenceRecord = { ...record, metadata_origin: "operator" };
+    if (Object.prototype.hasOwnProperty.call(update, "claim_key")) {
+      result.claim_key = normalize(update.claim_key || record.title);
+      result.claim_id = `claim:${sha256(result.claim_key)}`;
+    }
+    if (Object.prototype.hasOwnProperty.call(update, "stance")) result.stance = update.stance ?? "unassessed";
+    if (Object.prototype.hasOwnProperty.call(update, "incentives")) result.incentives = update.incentives ?? null;
+    if (Object.prototype.hasOwnProperty.call(update, "channels")) result.channels = update.channels ?? [];
+    if (Object.prototype.hasOwnProperty.call(update, "primary_url")) result.primary_url = update.primary_url ?? null;
+    if (Object.prototype.hasOwnProperty.call(update, "originator_id")) result.originator_id = update.originator_id ?? null;
+    if (result.originator_id) {
+      result.family_basis = "originator";
+      result.family_id = `family:${sha256(`originator:${normalize(result.originator_id)}`)}`;
+    } else if (record.family_basis === "originator" &&
+               !Object.prototype.hasOwnProperty.call(update, "originator_id") && !record.originator_id) {
+      // Legacy snapshots carried the family hash without the raw originator.
+      result.family_basis = record.family_basis;
+      result.family_id = record.family_id;
+    } else if (result.primary_url) {
+      result.family_basis = "primary_url";
+      result.family_id = `family:${sha256(`primary:${result.primary_url}`)}`;
+    } else {
+      result.family_basis = "domain";
+      result.family_id = `family:${sha256(`domain:${host(result.url)}`)}`;
+    }
+    const { evidence_id: _oldId, ...identity } = result;
+    result.evidence_id = `ev:${sha256(JSON.stringify(identity))}`;
+    return result;
+  });
+  if (seen.size !== updates.size) throw new Error("review URL is not accepted evidence in this artifact");
+  const derived = /^(EVIDENCE_REJECTED_|CONTRADICTORY_EVIDENCE$|DEPENDENCE_UNVERIFIED$|REVALIDATION_DUE_SOON$)/;
+  const collectorFlags = original.flags.filter((flag) => !derived.test(flag));
+  return assembleSnapshot(original.run_date, Date.parse(original.reference_at), original.window_days,
+    accepted, [...original.rejected], collectorFlags, 2);
+}
+
+function assembleSnapshot(
+  runDate: string, reference: number, windowDays: number,
+  accepted: EvidenceRecord[], rejected: RejectedEvidence[], collectorFlags: string[],
+  schemaVersion: 1 | 2
+): EvidenceSnapshot {
   const byClaim = new Map<string, EvidenceRecord[]>();
   for (const record of accepted) {
     const group = byClaim.get(record.claim_id) ?? [];
@@ -144,7 +203,7 @@ export function adjudicateEvidence(
     ...(claims.some((claim) => claim.revalidation === "revalidate_soon") ? ["REVALIDATION_DUE_SOON"] : [])
   ])].sort();
   const payload = {
-    schema_version: 1 as const,
+    schema_version: schemaVersion,
     run_date: runDate,
     reference_at: new Date(reference).toISOString(),
     window_days: windowDays,
@@ -189,6 +248,7 @@ function prepare(item: CollectedItem): {
     family_id: `family:${sha256(familyKey)}`,
     family_basis: familyBasis,
     primary_url: primary,
+    ...(item.originator_id ? { originator_id: item.originator_id } : {}),
     metadata_origin: (item.metadata_origin ??
       (item.claim_key || item.stance || item.primary_url || item.originator_id ? "collector" : "none")) as EvidenceRecord["metadata_origin"]
   };

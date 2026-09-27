@@ -42,10 +42,15 @@ export function recordDecision(input: DecisionInput): { decision_id: string; art
   }
   const row = database.prepare("SELECT artifact_id, evidence_json FROM runs WHERE id = ?").get(runId) as
     | { artifact_id: string | null; evidence_json: string | null } | undefined;
-  if (!row?.evidence_json || row.artifact_id !== artifactId) {
+  const reviewed = row && row.artifact_id !== artifactId
+    ? database.prepare("SELECT evidence_json FROM review_events WHERE run_id = ? AND artifact_id = ?")
+      .get(runId, artifactId) as { evidence_json: string } | undefined
+    : undefined;
+  const evidenceJson = row?.artifact_id === artifactId ? row.evidence_json : reviewed?.evidence_json;
+  if (!evidenceJson) {
     throw new Error("run and artifact_id do not match a stored evidence snapshot");
   }
-  const snapshot = JSON.parse(row.evidence_json) as EvidenceSnapshot;
+  const snapshot = JSON.parse(evidenceJson) as EvidenceSnapshot;
   const known = new Set(snapshot.claims.map((claim) => claim.claim_id));
   const claims = [...new Set(input.claim_ids)].sort();
   if (claims.some((claim) => !known.has(claim))) throw new Error("claim_ids contain an unknown claim");
