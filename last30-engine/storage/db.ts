@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
+import { EvidenceSnapshot } from "../engine/evidence/adjudicate";
 
 const DEFAULT_DB_PATH = path.join(__dirname, "..", "cache", "signalforge.db");
 const SCHEMA_PATH = resolveSchemaPath();
@@ -30,6 +31,7 @@ export type RunRecord = {
   created_at: string;
   integrity_score: number;
   flags: string[];
+  evidence?: EvidenceSnapshot;
 };
 
 export type ItemRecord = {
@@ -77,7 +79,16 @@ export function getDb(): any {
   db = new Database(dbPath);
   db.exec(schema);
   ensureItemColumns(db);
+  ensureRunColumns(db);
+  ensureDecisionColumns(db);
   return db;
+}
+
+function ensureDecisionColumns(database: any): void {
+  const columns = database.prepare("PRAGMA table_info(decisions)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "decision_snapshot_id")) {
+    database.exec("ALTER TABLE decisions ADD COLUMN decision_snapshot_id TEXT");
+  }
 }
 
 /** Persist the run metadata and collected items. */
@@ -88,25 +99,19 @@ export function insertRun(run: RunRecord, items: ItemRecord[]): void {
     return;
   }
   const insertRunStmt = database.prepare(
-    "INSERT INTO runs (id, query, window_days, target, mode, created_at, integrity_score, flags) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO runs (id, query, window_days, target, mode, created_at, integrity_score, flags, artifact_id, evidence_hash, evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   );
   const insertItemStmt = database.prepare(
     "INSERT INTO items (run_id, title, url, snippet, published_at, source, cluster_id, idea_cluster_id, evidence_grade, origin_count, engagement, timestamp_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   );
 
   const flagsJoined = run.flags.join(",");
-  insertRunStmt.run(
-    run.id,
-    run.query,
-    run.window_days,
-    run.target,
-    run.mode,
-    run.created_at,
-    run.integrity_score,
-    flagsJoined
-  );
-
   const insertMany = database.transaction((records: ItemRecord[]) => {
+    insertRunStmt.run(
+      run.id, run.query, run.window_days, run.target, run.mode, run.created_at,
+      run.integrity_score, flagsJoined, run.evidence?.artifact_id ?? null,
+      run.evidence?.evidence_hash ?? null, run.evidence ? JSON.stringify(run.evidence) : null
+    );
     for (const item of records) {
       insertItemStmt.run(
         item.run_id,
@@ -126,6 +131,14 @@ export function insertRun(run: RunRecord, items: ItemRecord[]): void {
   });
 
   insertMany(items);
+}
+
+function ensureRunColumns(database: any): void {
+  const columns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
+  const names = new Set(columns.map((column) => column.name));
+  for (const name of ["artifact_id", "evidence_hash", "evidence_json"]) {
+    if (!names.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} TEXT`);
+  }
 }
 
 export function fetchBaselineItems(
@@ -151,6 +164,7 @@ export function fetchBaselineItems(
         AND items.published_at IS NOT NULL
         AND items.published_at < ?
         AND runs.created_at >= ?
+        AND runs.evidence_json IS NOT NULL
       ORDER BY items.published_at DESC`
     )
     .all(ideaClusterId, baselineCutoff, lookbackCutoff) as BaselineItemRecord[];
@@ -170,7 +184,8 @@ export function closeDb(): void {
 export function getClusterHistory(
   ideaClusterId: string,
   runDate: string,
-  lookbackDays = CLUSTER_HISTORY_LOOKBACK_DAYS
+  lookbackDays = CLUSTER_HISTORY_LOOKBACK_DAYS,
+  excludingRunId = ""
 ): ClusterHistoryRecord {
   const database = getDb();
   const runDateEnd = `${runDate}T23:59:59.999Z`;
@@ -186,10 +201,12 @@ export function getClusterHistory(
       FROM items
       INNER JOIN runs ON runs.id = items.run_id
       WHERE items.idea_cluster_id = ?
+        AND runs.id <> ?
+        AND runs.evidence_json IS NOT NULL
         AND COALESCE(items.published_at, runs.created_at) >= ?
         AND COALESCE(items.published_at, runs.created_at) <= ?`
     )
-    .get(ideaClusterId, lookbackCutoff, runDateEnd) as
+    .get(ideaClusterId, excludingRunId, lookbackCutoff, runDateEnd) as
     | { first_seen: string | null; last_seen: string | null; seen_count: number }
     | undefined;
 

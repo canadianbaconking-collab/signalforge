@@ -7,10 +7,15 @@
     "dev": "ts-node-dev --respawn --transpile-only server/index.ts",
     "build": "tsc",
     "start": "node dist/server/index.js",
-    "smoke": "node tests/smoke.js"
+    "smoke": "node tests/smoke.js",
+    "test:evidence": "node --test tests/evidence.js",
+    "test:collectors": "node --test tests/collectors.js",
+    "test:reviews": "node --test tests/reviews.js",
+    "test:canonical": "node --test tests/canonical.js",
+    "test:comparison": "node --test tests/comparison.js"
   },
   "dependencies": {
-    "better-sqlite3": "^9.4.3",
+    "better-sqlite3": "^12.5.0",
     "express": "^4.19.2"
   },
   "devDependencies": {

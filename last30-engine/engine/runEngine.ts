@@ -20,6 +20,7 @@ import {
   RunRecord
 } from "../storage/db";
 import { calculateIntegrityScore, IntegrityComponents } from "./integrity/integrityScore";
+import { adjudicateEvidence, EvidenceSnapshot } from "./evidence/adjudicate";
 
 export type RunOptions = {
   query: string;
@@ -35,6 +36,8 @@ export type RunOptions = {
   novelty_window_days?: number;
   novelty_target_ratio?: number;
   collectors?: CollectorOverrides;
+  /** Manual, URL-keyed claim/provenance adjudication supplied by the operator. */
+  annotations?: Record<string, Pick<CollectedItem, "claim_key" | "stance" | "primary_url" | "originator_id" | "timestamp_basis">>;
 };
 
 export type CollectorOverrides = Partial<{
@@ -66,6 +69,8 @@ const DEFAULT_TARGET: "gpt" | "codex" = "gpt";
 const DEFAULT_TOP_N = 10;
 const DEFAULT_ALLOW_T4 = true;
 const RUN_ID_HASH_LENGTH = 10;
+const RANKING_POLICY_VERSION = 2;
+const INTEGRITY_POLICY_VERSION = 2;
 const DEFAULT_BASELINE_LOOKBACK_DAYS = 180;
 const DEFAULT_NOVELTY_WINDOW_DAYS = 30;
 const DEFAULT_NOVELTY_TARGET_RATIO = 0.25;
@@ -77,13 +82,10 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   const windowDays = options.window_days ?? DEFAULT_WINDOW;
   const target = options.target ?? DEFAULT_TARGET;
   const mode = options.mode ?? "quick";
-  const requestedSources = options.sources ?? ["reddit", "web", "hn"];
+  const requestedSources = options.sources ?? ["reddit", "hn", "github_issue", "github_release"];
   const allowT4 = options.allow_t4 ?? DEFAULT_ALLOW_T4;
-  const runDate = options.run_date ?? getRunDate();
   const limit = options.top_n ?? DEFAULT_TOP_N;
   const baselineLookbackDays = options.baseline_lookback_days ?? DEFAULT_BASELINE_LOOKBACK_DAYS;
-
-  const runId = buildRunId(options, runDate, requestedSources);
 
   const {
     items: collected,
@@ -97,14 +99,22 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     windowDays,
     options.collectors
   );
-  const windowFiltered = collected.filter((item) => isWithinWindow(item.published_at, windowDays));
+  const referenceAt = options.run_date ? undefined : new Date().toISOString();
+  const runDate = options.run_date ?? referenceAt!.slice(0, 10);
+  const evidence = adjudicateEvidence(
+    applyAnnotations(collected, options.annotations), runDate, windowDays, collectorFlags, referenceAt
+  );
+  const runId = buildRunId(options, runDate, requestedSources, evidence.evidence_hash);
+  const referenceTime = Date.parse(evidence.reference_at);
+  const windowFiltered = collected.filter((item) =>
+    !item.published_at || isWithinWindow(item.published_at, windowDays, referenceTime)
+  );
   const timestamped = windowFiltered.map((item) => ({
     ...item,
-    timestamp_tier: assignTimestampTier(item.published_at).tier
+    timestamp_tier: assignTimestampTier(item.published_at, item.timestamp_basis).tier
   }));
   const timestampTierCounts = countTimestampTiers(timestamped);
   const { kept: policyKept, excludedT4 } = applyTimestampPolicy(timestamped, allowT4);
-  const integrityTimestampCounts = countTimestampTiers(policyKept);
   const perSourceCounts = countBySource(policyKept);
   for (const source of requestedSources) {
     if (perSourceCounts[source] === undefined) {
@@ -112,12 +122,20 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     }
   }
 
-  const clustered = clusterItems(policyKept);
-  const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered);
+  // Only admitted evidence may influence claims, ranking, context blocks, or history.
+  const clustered = clusterItems(evidence.accepted.map((item) => ({
+    title: item.title,
+    url: item.url,
+    snippet: item.snippet,
+    published_at: item.published_at,
+    source: item.source,
+    timestamp_tier: item.timestamp_tier
+  })));
+  const { items: ideaClustered, clusters: ideaClusters } = clusterIdeas(clustered, evidence);
   const noveltyWindowDays = options.novelty_window_days ?? DEFAULT_NOVELTY_WINDOW_DAYS;
   const noveltyTargetRatio = options.novelty_target_ratio ?? DEFAULT_NOVELTY_TARGET_RATIO;
   const scored = scoreItems(ideaClustered);
-  const scoredWithNovelty = annotateNovelty(scored, runDate, noveltyWindowDays);
+  const scoredWithNovelty = annotateNovelty(scored, runDate, noveltyWindowDays, runId);
   const noveltySelection = selectTopClaimsWithNoveltyQuota(scoredWithNovelty, limit, noveltyTargetRatio);
   const baselineSummary = buildBaselineSummary(noveltySelection.selectedTopClaims, runDate, windowDays, baselineLookbackDays);
   const baselineTelemetry = summarizeBaselineTelemetry(baselineSummary, baselineLookbackDays);
@@ -128,13 +146,9 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
   }, {});
 
   const ideaTelemetry = buildIdeaTelemetry(ideaClusters);
-  const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), collectorFlags);
+  const flags = mergeFlags(buildFlags(collected.length, windowFiltered.length), evidence.flags);
   const integrityResult = calculateIntegrityScore({
-    timestamp_tier_counts: integrityTimestampCounts,
-    flags,
-    kept: policyKept.length,
-    echo_risk_stats: ideaTelemetry.echo_risk_stats,
-    evidence_grade_counts: ideaTelemetry.evidence_grade_counts,
+    evidence,
     baseline: {
       clusters_with_baseline: baselineTelemetry.clusters_with_baseline,
       top_claim_clusters_count: ideaTelemetry.idea_cluster_count
@@ -153,7 +167,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     target,
     topItems: noveltySelection.selectedTopClaims,
     baselineSummary,
-    newSignals: noveltySelection.selectedTopClaims.filter((item) => item.novel).slice(0, 5)
+    newSignals: noveltySelection.selectedTopClaims.filter((item) => item.novel).slice(0, 5),
+    evidence
   });
 
   const runFolder = writeArtifacts(
@@ -186,10 +201,11 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       novel_clusters_in_top: noveltySelection.novelClustersInTop,
       total_clusters: noveltySelection.totalClusters,
       quota_unmet: noveltySelection.quotaUnmet
-    }
+    },
+    evidence
   );
 
-  persistRun(runId, options, windowDays, target, mode, integrityScore, mergedFlags, ideaClustered);
+  persistRun(runId, options, windowDays, target, mode, integrityScore, mergedFlags, ideaClustered, evidence);
 
   const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
   return {
@@ -201,7 +217,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       context_block: path.join(runFolder, `context_block_${runFileSuffix}.txt`),
       summary: path.join(runFolder, `summary_${runFileSuffix}.md`),
       sources: path.join(runFolder, `sources_${runFileSuffix}.json`),
-      run: path.join(runFolder, `run_${runFileSuffix}.json`)
+      run: path.join(runFolder, `run_${runFileSuffix}.json`),
+      evidence: path.join(runFolder, `evidence_${runFileSuffix}.json`)
     },
     context_block_text: contextBlockText,
     run_telemetry: {
@@ -238,6 +255,7 @@ async function collectSources(
       results.push(...redditResult.items);
       excludedMissingTimestamp += redditResult.excluded_missing_timestamp;
       redditStrategyUsed = redditResult.strategy_used;
+      if (redditResult.strategy_used === "web_fallback") flags.push("REDDIT_FALLBACK_USED");
       if (redditResult.failed) {
         flags.push("REDDIT_FETCH_FAILED");
       }
@@ -248,6 +266,7 @@ async function collectSources(
   }
   if (sources.includes("web")) {
     results.push(...(collectors?.web ?? webCollector)(query));
+    if (!collectors?.web) flags.push("WEB_MOCK_SOURCE");
   }
   if (sources.includes("hn")) {
     try {
@@ -293,6 +312,26 @@ function mergeFlags(base: string[], additional: string[]): string[] {
   return Array.from(new Set([...base, ...additional]));
 }
 
+function applyAnnotations(
+  items: CollectedItem[],
+  annotations?: RunOptions["annotations"]
+): CollectedItem[] {
+  if (!annotations) return items;
+  return items.map((item) => {
+    const annotation = annotations[item.url];
+    if (!annotation) return item;
+    return {
+      ...item,
+      claim_key: annotation.claim_key ?? item.claim_key,
+      stance: annotation.stance ?? item.stance,
+      primary_url: annotation.primary_url ?? item.primary_url,
+      originator_id: annotation.originator_id ?? item.originator_id,
+      timestamp_basis: annotation.timestamp_basis ?? item.timestamp_basis,
+      metadata_origin: "operator"
+    };
+  });
+}
+
 function writeArtifacts(
   runId: string,
   contextBlockText: string,
@@ -328,7 +367,8 @@ function writeArtifacts(
     novel_clusters_in_top: number;
     total_clusters: number;
     quota_unmet: boolean;
-  }
+  },
+  evidence: EvidenceSnapshot
 ): string {
   const runFolder = buildRunFolder(runDate, options.query);
   fs.mkdirSync(runFolder, { recursive: true });
@@ -344,6 +384,13 @@ function writeArtifacts(
     `Integrity: ${integrityScore}/100`,
     `Flags: ${flags.join(", ") || "none"}`,
     "",
+    "## EVIDENCE ADJUDICATION",
+    ...evidence.claims.map((claim) =>
+      `- ${claim.label}: ${claim.status}; support families=${claim.independent_support_families}; counter=${claim.counter_ids.length}; revalidate by ${claim.revalidate_by}`
+    ),
+    `Rejected observations: ${evidence.rejected.length}`,
+    `Evidence artifact: ${evidence.artifact_id}`,
+    "",
     "## NEW SIGNALS",
     formatNewSignals(newSignals),
     "",
@@ -354,11 +401,21 @@ function writeArtifacts(
   fs.writeFileSync(path.join(runFolder, `context_block_${runFileSuffix}.txt`), contextBlockText, "utf8");
   fs.writeFileSync(path.join(runFolder, `summary_${runFileSuffix}.md`), summary, "utf8");
   fs.writeFileSync(path.join(runFolder, `sources_${runFileSuffix}.json`), JSON.stringify(artifactItems, null, 2), "utf8");
+  fs.writeFileSync(path.join(runFolder, `evidence_${runFileSuffix}.json`), JSON.stringify(evidence, null, 2), "utf8");
   fs.writeFileSync(
     path.join(runFolder, `run_${runFileSuffix}.json`),
     JSON.stringify({
       run_id: runId,
-      options,
+      options: persistedOptions(options),
+      artifact_id: evidence.artifact_id,
+      evidence_hash: evidence.evidence_hash,
+      ranking_policy_version: RANKING_POLICY_VERSION,
+      integrity_policy_version: INTEGRITY_POLICY_VERSION,
+      evidence_counts: {
+        accepted: evidence.accepted.length,
+        rejected: evidence.rejected.length,
+        claims: evidence.claims.length
+      },
       integrity_score: integrityScore,
       flags,
       allow_t4: allowT4,
@@ -391,7 +448,8 @@ function persistRun(
   mode: string,
   integrityScore: number,
   flags: string[],
-  items: IdeaClusteredItem[]
+  items: IdeaClusteredItem[],
+  evidence: EvidenceSnapshot
 ): void {
   const runRecord: RunRecord = {
     id: runId,
@@ -399,9 +457,10 @@ function persistRun(
     window_days: windowDays,
     target,
     mode,
-    created_at: new Date().toISOString(),
+    created_at: evidence.reference_at,
     integrity_score: integrityScore,
-    flags
+    flags,
+    evidence
   };
 
   const itemRecords: ItemRecord[] = items.map((item) => ({
@@ -430,36 +489,26 @@ function slugify(value: string): string {
     .slice(0, 40) || "run";
 }
 
-function normalizeQuery(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function getRunDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function buildRunId(options: RunOptions, runDate: string, sources: string[]): string {
-  const normalizedQuery = normalizeQuery(options.query);
-  const windowDays = options.window_days ?? DEFAULT_WINDOW;
-  const target = options.target ?? DEFAULT_TARGET;
-  const mode = options.mode ?? "quick";
-  const topN = options.top_n ?? DEFAULT_TOP_N;
-  const normalizedSources = [...sources].map((source) => source.toLowerCase()).sort();
+function buildRunId(options: RunOptions, runDate: string, sources: string[], evidenceHash = ""): string {
   const deterministic = options.deterministic ?? true;
   const nonce = deterministic ? "" : `|${crypto.randomUUID()}`;
   const payload = JSON.stringify({
-    query: normalizedQuery,
-    window_days: windowDays,
-    target,
-    mode,
-    sources: normalizedSources,
-    top_n: topN,
-    run_date: runDate
+    run_date: runDate,
+    requested_sources: sources,
+    options: persistedOptions(options),
+    evidence_hash: evidenceHash,
+    ranking_policy_version: RANKING_POLICY_VERSION,
+    integrity_policy_version: INTEGRITY_POLICY_VERSION
   });
 
   const hash = crypto.createHash("sha256").update(`${payload}${nonce}`).digest("hex");
   const slug = slugify(options.query);
   return `${runDate}-${slug}-${hash.slice(0, RUN_ID_HASH_LENGTH)}`;
+}
+
+function persistedOptions(options: RunOptions): Omit<RunOptions, "collectors"> {
+  const { collectors: _collectors, ...saved } = options;
+  return saved;
 }
 
 function buildRunFolder(runDate: string, query: string): string {
@@ -564,10 +613,11 @@ type NoveltyAnnotatedItem = ScoredItem & {
 function annotateNovelty(
   scored: ScoredItem[],
   runDate: string,
-  noveltyWindowDays: number
+  noveltyWindowDays: number,
+  runId: string
 ): NoveltyAnnotatedItem[] {
   return scored.map((item) => {
-    const history = getClusterHistory(item.idea_cluster_id, runDate);
+    const history = getClusterHistory(item.idea_cluster_id, runDate, undefined, runId);
     const novel = isNovelByWindow(history.last_seen, runDate, noveltyWindowDays);
     return {
       ...item,

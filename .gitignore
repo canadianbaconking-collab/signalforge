@@ -1,0 +1,5 @@
+last30-engine/node_modules/
+last30-engine/dist/
+last30-engine/cache/
+last30-engine/runs/
+last30-engine/.ts-node/

@@ -1,9 +1,6 @@
-export type StatSummary = {
-  min: number;
-  median: number;
-  max: number;
-};
+import { EvidenceSnapshot } from "../evidence/adjudicate";
 
+/** Component weights add to 100. Scores are triage quality signals, not truth probabilities. */
 export type IntegrityComponents = {
   timestamp: number;
   sources: number;
@@ -13,11 +10,8 @@ export type IntegrityComponents = {
 };
 
 export type IntegrityScoreInput = {
-  timestamp_tier_counts: Record<string, number>;
-  flags: string[];
-  kept: number;
-  echo_risk_stats?: StatSummary | null;
-  evidence_grade_counts?: Record<string, number>;
+  evidence: EvidenceSnapshot;
+  /** Only prior admitted canonical claim records qualify as baseline anchors. */
   baseline?: {
     clusters_with_baseline: number;
     top_claim_clusters_count: number;
@@ -36,139 +30,46 @@ const SOURCE_FAILURE_FLAGS = new Map([
   ["GITHUB_FETCH_FAILED", "SOURCE_FAILURE_GITHUB"]
 ]);
 
+/** Every numeric component is derived from admitted evidence, never excluded observations or host counts. */
 export function calculateIntegrityScore(input: IntegrityScoreInput): IntegrityScoreResult {
-  const totalTimestamped = sumCounts(input.timestamp_tier_counts);
-  const percentT3 = percentOf(input.timestamp_tier_counts.T3 ?? 0, totalTimestamped);
-  const percentT4 = percentOf(input.timestamp_tier_counts.T4 ?? 0, totalTimestamped);
+  const { accepted, claims } = input.evidence;
+  const count = accepted.length;
+  const timestamp = count ? 30 * accepted.reduce((sum, item) =>
+    sum + ({ T1: 1, T2: 0.8, T3: 0.4, T4: 0 }[item.timestamp_tier]), 0) / count : 0;
+  const sources = 25 * Math.min(1, count / 5);
+  const independence = claims.length ? 20 * claims.reduce((sum, claim) =>
+    sum + (claim.status === "contested" ? 0 : Math.min(2, claim.independent_support_families) / 2), 0
+  ) / claims.length : 0;
+  const evidence = claims.length ? 15 * claims.reduce((sum, claim) =>
+    sum + (claim.status === "corroborated" ? 1 : claim.status === "single_origin" ? 0.5 : 0), 0
+  ) / claims.length : 0;
+  const baseline = input.baseline && input.baseline.top_claim_clusters_count > 0
+    ? 10 * Math.min(1, input.baseline.clusters_with_baseline / input.baseline.top_claim_clusters_count) : 0;
 
-  const timestamp = clamp(
-    30 - 2 * Math.round(percentT3) - 5 * Math.round(percentT4),
-    0,
-    30
-  );
-
-  const failureFlagsCount = Array.from(SOURCE_FAILURE_FLAGS.keys()).filter((flag) =>
-    input.flags.includes(flag)
-  ).length;
-  const sourcesPenalty = Math.min(20, failureFlagsCount * 10) + (input.kept < 5 ? 5 : 0);
-  const sources = clamp(25 - sourcesPenalty, 0, 25);
-
-  const medianEchoRisk = clamp01(input.echo_risk_stats?.median ?? 0);
-  const independence = clamp(20 * (1 - medianEchoRisk), 0, 20);
-
-  const evidenceCounts = input.evidence_grade_counts ?? {};
-  const evidenceTotal = sumCounts(evidenceCounts);
-  const multiConfirmed = evidenceCounts["multi-confirmed"] ?? 0;
-  const implementationConfirmed = evidenceCounts["implementation-confirmed"] ?? 0;
-  const multiRatio = ratio(multiConfirmed, evidenceTotal);
-  const implementationRatio = ratio(implementationConfirmed, evidenceTotal);
-
-  const evidence = clamp(
-    5 + Math.min(10, 10 * multiRatio) + Math.min(5, 5 * implementationRatio),
-    0,
-    15
-  );
-
-  const baseline = calculateBaselineScore(input.baseline);
-
-  const components = {
-    timestamp,
-    sources,
-    independence,
-    evidence,
-    baseline
-  };
-  const integrityScore = clamp(
-    timestamp + sources + independence + evidence + baseline,
-    0,
-    100
-  );
-
-  const flags = buildIntegrityFlags({
-    kept: input.kept,
-    percentT3,
-    percentT4,
-    medianEchoRisk,
-    multiRatio,
-    implementationRatio,
-    existingFlags: input.flags
-  });
-
-  return {
-    integrity_score: Math.round(integrityScore),
-    flags,
-    components
-  };
-}
-
-function buildIntegrityFlags(input: {
-  kept: number;
-  percentT3: number;
-  percentT4: number;
-  medianEchoRisk: number;
-  multiRatio: number;
-  implementationRatio: number;
-  existingFlags: string[];
-}): string[] {
+  const components = { timestamp, sources, independence, evidence, baseline };
   const flags = new Set<string>();
-
-  if (input.kept < 5) {
-    flags.add("DEGRADED_SIGNAL_LOW_VOLUME");
-  }
-
-  if (input.percentT3 + input.percentT4 >= 20) {
+  if (count < 5) flags.add("DEGRADED_SIGNAL_LOW_VOLUME");
+  if (count && accepted.filter((record) => record.timestamp_tier === "T3").length / count >= 0.2) {
     flags.add("DEGRADED_SIGNAL_LOW_TIMESTAMP_TRUST");
   }
-
-  if (input.medianEchoRisk >= 0.6) {
-    flags.add("DEGRADED_SIGNAL_HIGH_ECHO_RISK");
-  }
-
-  if (input.multiRatio === 0 && input.implementationRatio === 0) {
+  const knownFamilyEcho = claims.some((claim) => {
+    const records = accepted.filter((record) => record.claim_id === claim.claim_id && record.family_basis !== "domain" && record.timestamp_tier !== "T3");
+    return records.length >= 3 &&
+      records.length - new Set(records.map((record) => record.family_id)).size >= 2;
+  });
+  if (knownFamilyEcho) flags.add("DEGRADED_SIGNAL_HIGH_ECHO_RISK");
+  if (!claims.some((claim) => claim.independent_support_families > 0)) {
     flags.add("DEGRADED_SIGNAL_LOW_EVIDENCE");
   }
-
-  for (const [flag, mapped] of SOURCE_FAILURE_FLAGS.entries()) {
-    if (input.existingFlags.includes(flag)) {
-      flags.add(mapped);
-    }
+  if (claims.some((claim) => claim.status === "contested")) flags.add("DEGRADED_SIGNAL_CONTRADICTION");
+  if (claims.some((claim) => claim.dependence_unverified)) flags.add("DEGRADED_SIGNAL_UNVERIFIED_DEPENDENCE");
+  for (const [sourceFlag, resultFlag] of SOURCE_FAILURE_FLAGS) {
+    if (input.evidence.flags.includes(sourceFlag)) flags.add(resultFlag);
   }
 
-  return Array.from(flags);
-}
-
-function calculateBaselineScore(
-  baseline: IntegrityScoreInput["baseline"] | undefined
-): number {
-  if (!baseline || baseline.clusters_with_baseline <= 0) {
-    return 0;
-  }
-  const denominator = Math.max(1, baseline.top_claim_clusters_count);
-  return clamp(10 * (baseline.clusters_with_baseline / denominator), 0, 10);
-}
-
-function percentOf(count: number, total: number): number {
-  if (total <= 0) {
-    return 0;
-  }
-  return (count / total) * 100;
-}
-
-function ratio(count: number, total: number): number {
-  if (total <= 0) {
-    return 0;
-  }
-  return count / total;
-}
-
-function sumCounts(counts: Record<string, number>): number {
-  return Object.values(counts).reduce((sum, value) => sum + value, 0);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-function clamp01(value: number): number {
-  return clamp(value, 0, 1);
+  return {
+    integrity_score: Math.round(Object.values(components).reduce((sum, value) => sum + value, 0)),
+    flags: [...flags],
+    components
+  };
 }

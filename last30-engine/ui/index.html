@@ -88,6 +88,11 @@
         cursor: pointer;
         font-weight: 600;
       }
+      .review-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+      .review-grid .full { grid-column: 1 / -1; }
+      .review-observation { margin: 10px 0; padding: 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+      .review-observation a { overflow-wrap: anywhere; }
+      .review-observation p { margin: 6px 0; }
       button.secondary {
         background: #4b5563;
         margin-left: 8px;
@@ -189,8 +194,31 @@
     </div>
 
     <div class="panel">
-      <label for="claimsPreview">Top Claims Preview</label>
+      <label for="claimsPreview">Top Signals Preview</label>
       <textarea id="claimsPreview" readonly></textarea>
+    </div>
+
+    <div class="panel" id="reviewPanel" hidden>
+      <strong>Claim review</strong>
+      <p>Inspect collected observations, then record your judgment. Unknown stance and origin remain unknown until you assign them. The run score and context block above reflect the original collection; review status is shown below.</p>
+      <p class="status" id="reviewArtifact"></p>
+      <label for="reviewClaim">Candidate claim</label>
+      <select id="reviewClaim"></select>
+      <label for="reviewObservation">Observation</label>
+      <select id="reviewObservation"></select>
+      <div class="review-observation" id="reviewDetail"></div>
+      <div class="review-grid">
+        <div><label for="reviewClaimKey">Shared claim key</label><input id="reviewClaimKey" list="reviewClaimKeys" placeholder="One exact claim proposition" /><datalist id="reviewClaimKeys"></datalist></div>
+        <div><label for="reviewStance">Stance</label><select id="reviewStance"><option value="unassessed">Unassessed</option><option value="supports">Supports</option><option value="refutes">Refutes</option><option value="neutral">Neutral</option></select></div>
+        <div><label for="reviewPrimaryUrl">Primary source URL</label><input id="reviewPrimaryUrl" type="url" placeholder="Unknown" /></div>
+        <div><label for="reviewOriginatorId">Originator ID</label><input id="reviewOriginatorId" placeholder="Unknown" /></div>
+        <div><label for="reviewIncentives">Incentives</label><input id="reviewIncentives" placeholder="Unknown" /></div>
+        <div><label for="reviewChannels">Distribution channels (comma-separated)</label><input id="reviewChannels" placeholder="Unknown" /></div>
+        <div class="full"><label for="reviewRationale">Why you made this review</label><input id="reviewRationale" placeholder="Required audit rationale" /></div>
+      </div>
+      <button id="saveReviewButton">Save review</button>
+      <div class="status" id="reviewStatus"></div>
+      <div class="status" id="reviewHistory"></div>
     </div>
 
     <div class="panel">

@@ -577,41 +577,40 @@ async function runOfflineSmoke() {
       "Idea clustering: shared signature items map to same idea_cluster_id"
     ),
     assertCondition(
-      signalforgeItems.every((item) => item.origin_count === 2),
-      "Idea clustering: origin_count increases across different domains"
+      signalforgeItems.every((item) => item.origin_count === 0),
+      "Claim families: different domains without provenance do not imply independent support"
     ),
     assertCondition(
-      quantumItems.length === 3 && quantumItems.every((item) => item.origin_count === 1),
-      "Idea clustering: reposts from same domain share a single origin"
+      quantumItems.length === 3 && quantumItems.every((item) => item.origin_count === 0),
+      "Claim families: unverified reposts cannot create a verified origin"
     ),
     assertCondition(
-      quantumItems.length > 0 && quantumItems.every((item) => item.echo_risk >= 0.6),
-      "Idea clustering: echo_risk is high for repost-heavy clusters"
+      quantumItems.length > 0 && quantumItems.every((item) => item.dependence_unverified && item.echo_risk === 0),
+      "Claim families: unknown dependence remains flagged without invented known-family echo"
     ),
     assertCondition(
-      githubItem?.evidence_grade === "implementation-confirmed",
-      "Evidence grading: github sources yield implementation-confirmed grade"
+      githubItem?.evidence_grade === "unassessed",
+      "Evidence grading: a GitHub URL alone does not confirm a claim"
     ),
     assertCondition(
       runData.idea_cluster_count === 5,
       "Telemetry: idea_cluster_count tracks unique idea clusters"
     ),
     assertCondition(
-      runData.origin_count_stats.min === 1 &&
-        runData.origin_count_stats.median === 1 &&
-        runData.origin_count_stats.max === 2,
-      "Telemetry: origin_count_stats min/median/max are correct"
+      runData.origin_count_stats.min === 0 &&
+        runData.origin_count_stats.median === 0 &&
+        runData.origin_count_stats.max === 0,
+      "Telemetry: verified family counts exclude host-only observations"
     ),
     assertCondition(
       runData.echo_risk_stats.min === 0 &&
         runData.echo_risk_stats.median === 0 &&
-        runData.echo_risk_stats.max >= 0.6,
-      "Telemetry: echo_risk_stats min/median/max are correct"
+        runData.echo_risk_stats.max === 0,
+      "Telemetry: known-family echo is not invented from domain counts"
     ),
     assertCondition(
-      runData.evidence_grade_counts["discussion-only"] === 4 &&
-        runData.evidence_grade_counts["implementation-confirmed"] === 1,
-      "Telemetry: evidence_grade_counts map is populated"
+      runData.evidence_grade_counts.unassessed === 5,
+      "Telemetry: evidence_grade_counts now reports canonical claim statuses"
     ),
     assertCondition(
       runData.baseline?.lookback_days === 180 &&
@@ -628,17 +627,18 @@ async function runOfflineSmoke() {
       "Integrity: components are persisted in run.json"
     ),
     assertCondition(
-      highEchoResult.flags.includes("DEGRADED_SIGNAL_HIGH_ECHO_RISK") &&
-        highEchoRun.integrity.components.independence <= 8,
-      "Integrity: high echo risk run emits degraded flag and lowers independence score"
+      highEchoResult.flags.includes("DEGRADED_SIGNAL_UNVERIFIED_DEPENDENCE") &&
+        !highEchoResult.flags.includes("DEGRADED_SIGNAL_HIGH_ECHO_RISK") &&
+        highEchoRun.integrity.components.independence === 0,
+      "Integrity: host-only echoes remain unverified and add no independence score"
     ),
     assertCondition(
       lowVolumeResult.flags.includes("DEGRADED_SIGNAL_LOW_VOLUME"),
       "Integrity: low kept volume emits degraded low volume flag"
     ),
     assertCondition(
-      disallowT4Run.integrity.components.timestamp > allowT4Run.integrity.components.timestamp,
-      "Integrity: excluding T4 improves timestamp component"
+      disallowT4Run.integrity.components.timestamp === allowT4Run.integrity.components.timestamp,
+      "Integrity: allow_t4 cannot change the admitted-evidence timestamp component"
     ),
     assertCondition(
       ancientAlpha?.novel === true && recurringBeta?.novel === false,

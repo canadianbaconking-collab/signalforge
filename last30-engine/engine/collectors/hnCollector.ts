@@ -20,20 +20,23 @@ export async function hnCollector(query: string, limit = 10): Promise<CollectedI
   const url = `${HN_SEARCH_URL}?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=${hitsPerPage}`;
   const response = await fetchWithRetry(url, { method: "GET" }, HN_RETRIES, HN_TIMEOUT_MS);
   const payload = (await response.json()) as { hits?: HnHit[] };
-  const hits = payload.hits ?? [];
+  if (!Array.isArray(payload?.hits)) throw new Error("Invalid HN search response");
+  const hits = payload.hits;
 
-  return hits.slice(0, limit).map((hit) => {
-    const publishedAt = hit.created_at_i
-      ? new Date(hit.created_at_i * 1000).toISOString()
-      : hit.created_at
-      ? new Date(hit.created_at).toISOString()
-      : new Date().toISOString();
+  return hits.slice(0, limit).filter((hit) => hit && typeof hit.objectID === "string").map((hit) => {
+    // Invalid dates stay missing evidence; one bad timestamp must not kill the batch.
+    const time = typeof hit.created_at_i === "number"
+      ? hit.created_at_i * 1000
+      : typeof hit.created_at === "string" ? Date.parse(hit.created_at) : NaN;
+    const date = new Date(time);
+    const publishedAt = Number.isNaN(date.getTime()) ? null : date.toISOString();
     return {
       title: hit.title?.trim() || "Untitled",
       url: hit.url?.trim() || `https://news.ycombinator.com/item?id=${hit.objectID}`,
       snippet: buildSnippet(hit.story_text),
       published_at: publishedAt,
-      source: "hn"
+      source: "hn",
+      timestamp_basis: "platform"
     };
   });
 }
