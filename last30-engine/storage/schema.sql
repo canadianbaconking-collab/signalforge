@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   choice TEXT NOT NULL,
   rationale TEXT NOT NULL,
   claim_ids_json TEXT NOT NULL,
+  decision_snapshot_id TEXT,
   recorded_at TEXT NOT NULL
 );
 
@@ -61,3 +62,10 @@ CREATE TABLE IF NOT EXISTS review_events (
   recorded_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS review_events_run_order ON review_events(run_id, event_number);
+
+CREATE TABLE IF NOT EXISTS derived_artifacts (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('comparison', 'decision_snapshot')),
+  content_json TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);

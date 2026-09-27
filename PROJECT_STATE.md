@@ -19,6 +19,7 @@ Before this tranche, HN/Reddit/GitHub ingestion was real but recency depended on
 5. Group admitted observations by canonical `claim_id` for ranking and novelty. Explicit primary/originator IDs count as identified families; domain counts and source categories confer no corroboration. Score statuses and known-family echoes for triage, calculate numeric integrity from admitted observations and canonical claims, and build context blocks from the same snapshot. The `sources` artifact remains for compatibility, with canonical meanings for its old field names. Older token-signature clusters are no longer an authority model.
 6. Write content-addressed evidence and run artifacts. The run ID covers evidence hash, effective options, and ranking/integrity policy version 2. Same-input replay excludes its own prior database row from novelty history so artifact bytes stay stable. Previous policy artifacts have distinct run IDs and remain readable.
 7. Store run and evidence JSON in SQLite. Inspect candidate claim groups in the UI/API, annotate exact accepted URLs, and write a parent-linked, content-addressed reviewed evidence snapshot with an append-only rationale/edits audit event. A decision must cite an exact original or reviewed evidence artifact and its claim IDs. Append-only outcomes record rating, time, notes, and confounders.
+8. Compare two exact evidence artifact IDs in reference-time order. Record content-addressed comparison and decision snapshot artifacts in SQLite. A brief enumerates ranked claims, support/counter evidence IDs, revalidation state, rejected evidence, unresolved flags, and optional comparison lineage. A decision can cite that exact brief; subsequent outcomes retain the decision link.
 
 ## Contracts and limits
 
@@ -34,6 +35,9 @@ Before this tranche, HN/Reddit/GitHub ingestion was real but recency depended on
 - Collector-side Reddit/release windows and GitHub search cutoffs still use collection wall time. Historical replay requires fixed collector inputs; the adjudicator's fixed reference time does not make live collection historical.
 - HN malformed timestamps become null for canonical rejection; Reddit counts malformed/missing dates in `excluded_missing_timestamp`; GitHub skips invalid dates. Reddit/GitHub exclusions are not yet individual canonical rejection records. HTTP retries remain bounded, without adaptive Retry-After scheduling.
 - The engine uses SQLite and filesystem artifacts locally. No hosted service, MCP tunnel, embedding index, or AlphaTrace coupling is present.
+- `POST /compare` accepts `from_artifact_id` and `to_artifact_id`. Claim identity is the canonical claim ID: a review that changes `claim_key` appears as one removed and one added claim. Same-URL evidence revisions are linked by old/new evidence IDs. Gained/lost support and counter-family arrays count only identified, non-T3 families. Both source flag sets are carried forward and target collector failure is highlighted, since missing evidence after a failed fetch cannot establish that support vanished in the world. Revalidation is evaluated at the target artifact's fixed `reference_at`, never at wall time.
+- `POST /decision-snapshot` accepts `evidence_artifact_id`, `question`, and optional stored `comparison_id`. `GET /evidence-artifact/:id` and `GET /derived-artifact/:id` return hash-verified exact artifacts. The decision snapshot is an evidence brief, not a recommendation or calibrated confidence. `POST /decision` optionally links `decision_snapshot_id`; its evidence artifact and question must match. Old decision IDs and records remain valid.
+- Derived artifacts are immutable and content addressed in SQLite. Creation time is stored separately from hashed content. This gives local integrity checks and deterministic replay, not an external signature or tamper-proof timestamp. Database schema adds `derived_artifacts` and migrates the optional decision link on existing databases.
 
 ## Verification
 
@@ -44,6 +48,7 @@ Before this tranche, HN/Reddit/GitHub ingestion was real but recency depended on
 - `pnpm run test:collectors`: 11 offline cassette tests pass, covering HN/Reddit/GitHub parsing, malformed timestamps/envelopes, HTTP rate limits, transient and transport failures, preservation of partial GitHub results, default real-source selection, and failure/mock flags in evidence artifacts. Fixtures are synthetic API-shaped examples, not live recordings.
 - Build, 42 original smoke checks, four evidence tests, and 11 collector tests were rerun successfully on 2026-09-27 after a frozen-lockfile install.
 - Live collector checks were not run. Public API behavior, availability, and real rate-limit responses remain unverified; cassette tests establish only behavior for the supplied responses.
+- `pnpm run test:comparison`: six tests cover support loss, counter-family gain, echo behavior, collector-failure caveats, stale/removed claims, same-URL reviewed evidence, deterministic IDs, corrupted source and derived artifacts, stored brief linkage, and decision linkage. The build and all prior suites (42 smoke checks, four evidence tests, 11 collector tests, review and canonical tests) pass after this tranche.
 
 ## Completed collector tranche — 2026-09-27
 
@@ -57,9 +62,14 @@ Added `GET /review/:run_id` (with optional `artifact_id` history lookup) and `PO
 
 Replaced token-signature authority grouping with canonical claim IDs throughout selection and history. The numeric integrity components use only admitted timestamps, admitted volume, verified source families, canonical statuses, and previously admitted canonical baseline anchors. Collector failures remain visible as flags, but do not inject unadmitted counts into a numeric component. A GitHub URL without explicit stance/provenance is `unassessed`; several domains repeating one primary source remain `single_origin`. `GET /review/:run_id` now includes a deterministic `ranked_claims` projection for that exact original or reviewed artifact. Policy version 2 enters the run ID to avoid overwriting older-policy outputs. The revised 42-check smoke suite and a new adversarial `/run` fixture verify echoes, independent support, contradiction, source-category neutrality, exclusions, partial failures, and review ranking. Older artifacts remain readable.
 
+## Completed comparison and decision snapshot tranche — 2026-09-27
+
+Built a pure comparator over verified schema-v1/v2 evidence snapshots, a deterministic decision brief, read/write APIs, SQLite persistence, and an optional exact-brief link on immutable decisions. The comparator reports added/removed/changed claims, evidence identity changes, same-URL revisions, verified family gains/losses, contradiction and revalidation flags. The brief lists claim IDs and direct evidence IDs, rejection reasons, unresolved conditions, and comparison lineage. It does not invent stance, choose an option, or convert heuristic integrity into confidence.
+
 ## Exact next tranche
 
-1. Add comparison of two evidence artifact IDs to answer what changed, what became stale, and what lost/gained independent support. Build a Decision Snapshot Generator on top of that, followed by pattern detection and confidence/outcome calibration once enough outcomes exist.
-2. Add artifact manifest/signature support and a migration/versioning policy for evidence schema and SQLite. Keep replay deterministic and old artifacts readable.
+1. Add a compact UI for choosing two stored artifacts, inspecting their comparison, and opening the decision brief; keep provenance and rejection detail prominent. Add a run/artifact index API if needed. Extend the brief with explicit alternatives and falsification/revisit criteria supplied by the operator, without automatic recommendation.
+2. Add an artifact manifest/signature option and a documented migration/versioning policy for evidence schema, derived schemas, and SQLite. Preserve deterministic replay and old artifact readability.
+3. After enough decision/outcome pairs exist, build personal pattern detection and confidence/outcome calibration. Do not infer predictive confidence from the present heuristic score.
 
 Collector follow-up: run live validation when appropriate; carry explicit reference time into live collector contracts if historical collection is needed; retain per-item Reddit/GitHub rejection diagnostics. A real-web collector remains optional future scope, not completed work.

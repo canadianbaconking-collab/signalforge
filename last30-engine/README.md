@@ -98,3 +98,11 @@ Review recomputes canonical claim/family status and the read-only `ranked_claims
 `POST /outcome` requires `decision_id`, ISO `observed_at`, integer `rating` from 0 to 5, and optional `notes` and `confounders`. Outcomes are append-only. `GET /decision/:id` returns the decision and its observations.
 
 SQLite defaults to `cache/signalforge.db`; set `SIGNALFORGE_DB_PATH` to use another local path.
+
+## Compare evidence and prepare a decision
+
+`POST /compare` accepts exact `from_artifact_id` and `to_artifact_id` values from stored original or reviewed evidence snapshots. The result has a deterministic `comparison_id`, per-claim additions/removals/changes, evidence identity and same-URL revisions, gained/lost identified support and counter families, and stale/contradiction flags. The first artifact's reference time must be no later than the second's. Revalidation is evaluated at the second artifact's fixed reference time.
+
+`POST /decision-snapshot` accepts `evidence_artifact_id`, a `question`, and optionally that stored `comparison_id`. It returns a content-addressed evidence brief with ranked claim IDs, support and counter evidence IDs, revalidation dates, rejected evidence, and unresolved flags. It makes no choice or confidence claim. Retrieve the exact source evidence through `GET /evidence-artifact/:id` and either derived artifact through `GET /derived-artifact/:id`; reads verify content against its stored hash.
+
+`POST /decision` may include `decision_snapshot_id`. When supplied, the brief must match the exact evidence artifact and question recorded with the decision. Outcomes continue to link to that immutable decision. Existing decisions without briefs remain valid.

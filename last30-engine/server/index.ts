@@ -5,6 +5,9 @@ import { runRoute } from "./runRoute";
 import { getDb } from "../storage/db";
 import { getDecision, recordDecision, recordOutcome } from "../storage/decisions";
 import { getReview, recordReview, ReviewError } from "../storage/reviews";
+import {
+  ArtifactError, getDerivedArtifact, loadEvidenceArtifact, recordComparison, recordDecisionSnapshot
+} from "../storage/derivedArtifacts";
 
 const app = express();
 const PORT = 8787;
@@ -17,6 +20,52 @@ const uiPath = [path.join(appRoot, "ui"), path.join(appRoot, "..", "ui")]
 app.use(express.static(uiPath));
 
 app.post("/run", runRoute);
+
+app.post("/compare", (req, res) => {
+  try {
+    if (typeof req.body?.from_artifact_id !== "string" || typeof req.body?.to_artifact_id !== "string") {
+      throw new ArtifactError("from_artifact_id and to_artifact_id are required", 400);
+    }
+    res.json(recordComparison(req.body.from_artifact_id, req.body.to_artifact_id));
+  } catch (error) {
+    res.status(error instanceof ArtifactError ? error.status : 500)
+      .json({ error: error instanceof Error ? error.message : "comparison failed" });
+  }
+});
+
+app.post("/decision-snapshot", (req, res) => {
+  try {
+    if (typeof req.body?.evidence_artifact_id !== "string" || typeof req.body?.question !== "string" ||
+        (req.body.comparison_id !== undefined && typeof req.body.comparison_id !== "string")) {
+      throw new ArtifactError("evidence_artifact_id and question are required", 400);
+    }
+    res.json(recordDecisionSnapshot(
+      req.body.evidence_artifact_id, req.body.question, req.body.comparison_id
+    ));
+  } catch (error) {
+    res.status(error instanceof ArtifactError ? error.status : 500)
+      .json({ error: error instanceof Error ? error.message : "decision snapshot failed" });
+  }
+});
+
+app.get("/derived-artifact/:id", (req, res) => {
+  try {
+    const artifact = getDerivedArtifact(req.params.id);
+    if (!artifact) { res.status(404).json({ error: "derived artifact not found" }); return; }
+    res.json(artifact);
+  } catch (error) {
+    res.status(error instanceof ArtifactError ? error.status : 500)
+      .json({ error: error instanceof Error ? error.message : "artifact read failed" });
+  }
+});
+
+app.get("/evidence-artifact/:id", (req, res) => {
+  try { res.json(loadEvidenceArtifact(req.params.id)); }
+  catch (error) {
+    res.status(error instanceof ArtifactError ? error.status : 500)
+      .json({ error: error instanceof Error ? error.message : "evidence read failed" });
+  }
+});
 
 app.get("/review/:run_id", (req, res) => {
   const artifactId = typeof req.query.artifact_id === "string" ? req.query.artifact_id : undefined;

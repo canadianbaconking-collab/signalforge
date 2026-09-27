@@ -1,6 +1,8 @@
 import crypto from "crypto";
 import { getDb } from "./db";
 import { EvidenceSnapshot } from "../engine/evidence/adjudicate";
+import { DecisionSnapshot } from "../engine/evidence/compare";
+import { getDerivedArtifact } from "./derivedArtifacts";
 
 export type DecisionInput = {
   run_id: string;
@@ -9,6 +11,7 @@ export type DecisionInput = {
   choice: string;
   rationale: string;
   claim_ids: string[];
+  decision_snapshot_id?: string;
 };
 
 export type OutcomeInput = {
@@ -54,11 +57,24 @@ export function recordDecision(input: DecisionInput): { decision_id: string; art
   const known = new Set(snapshot.claims.map((claim) => claim.claim_id));
   const claims = [...new Set(input.claim_ids)].sort();
   if (claims.some((claim) => !known.has(claim))) throw new Error("claim_ids contain an unknown claim");
-  const payload = { run_id: runId, artifact_id: artifactId, question, choice, rationale, claim_ids: claims };
+  const decisionSnapshotId = input.decision_snapshot_id === undefined
+    ? null : nonempty(input.decision_snapshot_id, "decision_snapshot_id");
+  if (decisionSnapshotId) {
+    const brief = getDerivedArtifact(decisionSnapshotId) as DecisionSnapshot | null;
+    if (!brief || !("snapshot_id" in brief) ||
+        brief.evidence_artifact_id !== artifactId || brief.question !== question) {
+      throw new Error("decision snapshot must match the exact evidence artifact and question");
+    }
+  }
+  const payload = {
+    run_id: runId, artifact_id: artifactId, question, choice, rationale, claim_ids: claims,
+    ...(decisionSnapshotId ? { decision_snapshot_id: decisionSnapshotId } : {})
+  };
   const decisionId = id("decision", payload);
   database.prepare(
-    "INSERT OR IGNORE INTO decisions (id, run_id, artifact_id, question, choice, rationale, claim_ids_json, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-  ).run(decisionId, runId, artifactId, question, choice, rationale, JSON.stringify(claims), new Date().toISOString());
+    "INSERT OR IGNORE INTO decisions (id, run_id, artifact_id, question, choice, rationale, claim_ids_json, decision_snapshot_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(decisionId, runId, artifactId, question, choice, rationale, JSON.stringify(claims),
+    decisionSnapshotId, new Date().toISOString());
   return { decision_id: decisionId, artifact_id: artifactId };
 }
 

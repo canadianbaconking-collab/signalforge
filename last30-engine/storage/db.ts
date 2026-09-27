@@ -80,7 +80,15 @@ export function getDb(): any {
   db.exec(schema);
   ensureItemColumns(db);
   ensureRunColumns(db);
+  ensureDecisionColumns(db);
   return db;
+}
+
+function ensureDecisionColumns(database: any): void {
+  const columns = database.prepare("PRAGMA table_info(decisions)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "decision_snapshot_id")) {
+    database.exec("ALTER TABLE decisions ADD COLUMN decision_snapshot_id TEXT");
+  }
 }
 
 /** Persist the run metadata and collected items. */
