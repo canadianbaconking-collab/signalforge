@@ -6,7 +6,8 @@ const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
 
-const { adjudicateEvidence } = require("../dist/engine/evidence/adjudicate");
+const { adjudicateEvidence, reviewEvidenceSnapshot } = require("../dist/engine/evidence/adjudicate");
+const { verifySnapshot } = require("../dist/engine/evidence/compare");
 const { runEngine } = require("../dist/engine/runEngine");
 const { closeDb } = require("../dist/storage/db");
 const { recordDecision, recordOutcome, getDecision } = require("../dist/storage/decisions");
@@ -16,6 +17,74 @@ const recent = "2024-02-09T12:00:00.000Z";
 const old = "2024-01-01T12:00:00.000Z";
 const source = (title, url, extras = {}) => ({
   title, url, snippet: title, published_at: recent, source: "hn", ...extras
+});
+
+test("shared primary and originator links form transitive families in collection and review", () => {
+  const observation = (n, originator_id, primary_url) => source("One proposition", `https://source${n}.example/report`, {
+    claim_key: "one proposition", stance: "supports", originator_id, primary_url
+  });
+  const input = [observation(1, "lab-a", "https://primary.example/study-a"),
+    observation(2, "lab-b", "https://primary.example/study-a"),
+    observation(3, "lab-b", "https://primary.example/study-b")];
+  const snapshot = adjudicateEvidence(input, runDate, 7);
+  assert.equal(snapshot.schema_version, 3);
+  assert.deepEqual(snapshot, adjudicateEvidence([...input].reverse(), runDate, 7));
+  assert.equal(snapshot.claims[0].independent_support_families, 1);
+  assert.equal(snapshot.claims[0].status, "single_origin");
+  assert.equal(new Set(snapshot.accepted.map(r => r.family_id)).size, 1);
+  verifySnapshot(snapshot);
+  const reviewed = reviewEvidenceSnapshot(snapshot, new Map([[input[1].url, { primary_url: null }]]));
+  assert.equal(reviewed.claims[0].independent_support_families, 2);
+  assert.equal(reviewed.claims[0].status, "corroborated");
+  assert.equal(snapshot.claims[0].status, "single_origin");
+  const reconnected = reviewEvidenceSnapshot(reviewed, new Map([[input[1].url, { primary_url: input[0].primary_url }]]));
+  assert.equal(reconnected.claims[0].independent_support_families, 1);
+  verifySnapshot(reviewed);
+  verifySnapshot(reconnected);
+
+  // Review also joins formerly independent observations through a shared primary.
+  const independent = adjudicateEvidence([input[0], observation(4, "lab-c", "https://primary.example/study-c")], runDate, 7);
+  const joined = reviewEvidenceSnapshot(independent, new Map([["https://source4.example/report", { primary_url: input[0].primary_url }]]));
+  assert.equal(independent.claims[0].status, "corroborated");
+  assert.equal(joined.claims[0].status, "single_origin");
+
+  // An unverified same-domain record neither bridges explicit families nor gains verification.
+  const unknown = source("One proposition", "https://source1.example/unknown", { claim_key: "one proposition", stance: "supports" });
+  const withUnknown = adjudicateEvidence([...input, unknown], runDate, 7);
+  assert.equal(withUnknown.claims[0].independent_support_families, 1);
+  assert.equal(withUnknown.claims[0].dependence_unverified, true);
+});
+
+test("legacy hash-only originators survive repeated reviews without changing old snapshots", () => {
+  const digest = value => crypto.createHash("sha256").update(value).digest("hex");
+  for (const version of [1, 2]) {
+    const snapshot = adjudicateEvidence([1, 2].map(n => source("Legacy proposition", `https://legacy.example/${n}`, {
+      claim_key: "legacy proposition", stance: "supports", originator_id: "legacy-lab"
+    })), runDate, 7);
+    // Shape of the older hash-only originator records, with internally consistent hashes.
+    for (const record of snapshot.accepted) {
+      delete record.originator_id;
+      const { evidence_id, ...identity } = record;
+      record.evidence_id = `ev:${digest(JSON.stringify(identity))}`;
+    }
+    snapshot.claims[0].evidence_ids = snapshot.accepted.map(r => r.evidence_id).sort();
+    snapshot.claims[0].support_ids = [...snapshot.claims[0].evidence_ids];
+    snapshot.schema_version = version;
+    const { artifact_id, evidence_hash, ...payload } = snapshot;
+    snapshot.evidence_hash = digest(JSON.stringify(payload));
+    snapshot.artifact_id = `evidence:${snapshot.evidence_hash}`;
+    verifySnapshot(snapshot);
+    const original = JSON.stringify(snapshot);
+    const url = snapshot.accepted[0].url;
+    const joined = reviewEvidenceSnapshot(snapshot, new Map([[url, { primary_url: "https://primary.example/legacy" }]]));
+    assert.equal(joined.claims[0].independent_support_families, 1);
+    const clearedPrimary = reviewEvidenceSnapshot(joined, new Map([[url, { primary_url: null }]]));
+    assert.equal(clearedPrimary.claims[0].independent_support_families, 1);
+    const clearedOriginator = reviewEvidenceSnapshot(joined, new Map([[url, { originator_id: null }]]));
+    assert.equal(clearedOriginator.claims[0].independent_support_families, 2);
+    assert.equal(JSON.stringify(snapshot), original);
+    for (const revised of [joined, clearedPrimary, clearedOriginator]) verifySnapshot(revised);
+  }
 });
 
 test("strict window, timestamp tiers, duplicate URLs, and stable snapshot hash", () => {

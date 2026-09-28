@@ -53,7 +53,7 @@ test("review candidates, auditable changes, evidence lineage, conflicts, and dec
   });
   assert.notEqual(first.artifact_id, baseId);
   const current = getReview(run.run_id);
-  assert.equal(current.snapshot.schema_version, 2);
+  assert.equal(current.snapshot.schema_version, 3);
   assert.equal(current.snapshot.rejected.length, 1);
   assert.equal(current.snapshot.claims.length, 1);
   assert.equal(current.snapshot.claims[0].status, "contested");
