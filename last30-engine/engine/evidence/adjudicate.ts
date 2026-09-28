@@ -27,6 +27,8 @@ export type EvidenceRecord = {
   metadata_origin: "none" | "collector" | "operator";
   /** Explicit review metadata; absent means unknown. */
   originator_id?: string | null;
+  /** Preserves a legacy hash-only originator when a schema-v1 review has no raw ID. */
+  originator_family_id?: string;
   incentives?: string | null;
   channels?: string[];
 };
@@ -49,7 +51,7 @@ export type ClaimRecord = {
 };
 
 export type EvidenceSnapshot = {
-  schema_version: 1 | 2;
+  schema_version: 1 | 2 | 3;
   artifact_id: string;
   evidence_hash: string;
   run_date: string;
@@ -103,7 +105,7 @@ export function adjudicateEvidence(
     }
   }
 
-  return assembleSnapshot(runDate, reference, windowDays, accepted, rejected, collectorFlags, 1);
+  return assembleSnapshot(runDate, reference, windowDays, accepted, rejected, collectorFlags);
 }
 
 /** Re-adjudicate stored evidence without fetching again or changing rejected records. */
@@ -126,7 +128,10 @@ export function reviewEvidenceSnapshot(
     if (Object.prototype.hasOwnProperty.call(update, "incentives")) result.incentives = update.incentives ?? null;
     if (Object.prototype.hasOwnProperty.call(update, "channels")) result.channels = update.channels ?? [];
     if (Object.prototype.hasOwnProperty.call(update, "primary_url")) result.primary_url = update.primary_url ?? null;
-    if (Object.prototype.hasOwnProperty.call(update, "originator_id")) result.originator_id = update.originator_id ?? null;
+    if (Object.prototype.hasOwnProperty.call(update, "originator_id")) {
+      result.originator_id = update.originator_id ?? null;
+      delete result.originator_family_id;
+    }
     if (result.originator_id) {
       result.family_basis = "originator";
       result.family_id = `family:${sha256(`originator:${normalize(result.originator_id)}`)}`;
@@ -150,14 +155,57 @@ export function reviewEvidenceSnapshot(
   const derived = /^(EVIDENCE_REJECTED_|CONTRADICTORY_EVIDENCE$|DEPENDENCE_UNVERIFIED$|REVALIDATION_DUE_SOON$)/;
   const collectorFlags = original.flags.filter((flag) => !derived.test(flag));
   return assembleSnapshot(original.run_date, Date.parse(original.reference_at), original.window_days,
-    accepted, [...original.rejected], collectorFlags, 2);
+    accepted, [...original.rejected], collectorFlags);
+}
+
+/** Shared explicit originators OR primary URLs connect dependent observations.
+ * Rebuild from raw provenance on every review so clearing a link can split a family.
+ * Domain-only evidence never creates a bridge or becomes verified by association.
+ */
+function reconcileFamilies(records: EvidenceRecord[]): EvidenceRecord[] {
+  const parent = new Map<string, string>();
+  const find = (key: string): string => {
+    if (!parent.has(key)) parent.set(key, key);
+    let root = key;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    while (key !== root) {
+      const next = parent.get(key)!;
+      parent.set(key, root);
+      key = next;
+    }
+    return root;
+  };
+  const tokens = records.map(record => {
+    const ids: string[] = [];
+    if (record.originator_id) ids.push(`family:${sha256(`originator:${normalize(record.originator_id)}`)}`);
+    else if (record.family_basis === "originator") ids.push(record.originator_family_id ?? record.family_id);
+    if (record.primary_url) ids.push(`family:${sha256(`primary:${record.primary_url}`)}`);
+    for (const id of ids) find(id);
+    for (const id of ids.slice(1)) {
+      const a = find(ids[0]), b = find(id);
+      // Lexical root choice makes component identity independent of input order.
+      if (a !== b) parent.set(a < b ? b : a, a < b ? a : b);
+    }
+    return ids;
+  });
+  return records.map((record, index) => {
+    if (!tokens[index].length) return record;
+    const family_id = find(tokens[index][0]);
+    const legacyOriginator = record.family_basis === "originator" && !record.originator_id
+      ? record.originator_family_id ?? record.family_id : undefined;
+    if (family_id === record.family_id && legacyOriginator === record.originator_family_id) return record;
+    const { evidence_id: _oldId, ...identity } = {
+      ...record, family_id, ...(legacyOriginator ? { originator_family_id: legacyOriginator } : {})
+    };
+    return { evidence_id: `ev:${sha256(JSON.stringify(identity))}`, ...identity };
+  });
 }
 
 function assembleSnapshot(
   runDate: string, reference: number, windowDays: number,
-  accepted: EvidenceRecord[], rejected: RejectedEvidence[], collectorFlags: string[],
-  schemaVersion: 1 | 2
+  accepted: EvidenceRecord[], rejected: RejectedEvidence[], collectorFlags: string[]
 ): EvidenceSnapshot {
+  accepted = reconcileFamilies(accepted);
   const byClaim = new Map<string, EvidenceRecord[]>();
   for (const record of accepted) {
     const group = byClaim.get(record.claim_id) ?? [];
@@ -203,7 +251,7 @@ function assembleSnapshot(
     ...(claims.some((claim) => claim.revalidation === "revalidate_soon") ? ["REVALIDATION_DUE_SOON"] : [])
   ])].sort();
   const payload = {
-    schema_version: schemaVersion,
+    schema_version: 3 as const,
     run_date: runDate,
     reference_at: new Date(reference).toISOString(),
     window_days: windowDays,

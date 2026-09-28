@@ -6,7 +6,7 @@ const hash = (value: unknown) => crypto.createHash("sha256").update(JSON.stringi
 
 /** Reject a corrupted or unsupported stored artifact before deriving another one from it. */
 export function verifySnapshot(snapshot: EvidenceSnapshot): void {
-  if (!snapshot || ![1, 2].includes(snapshot.schema_version) ||
+  if (!snapshot || ![1, 2, 3].includes(snapshot.schema_version) ||
       !/^evidence:[a-f0-9]{64}$/.test(snapshot.artifact_id)) {
     throw new Error("unsupported evidence artifact");
   }

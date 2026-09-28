@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
 import { EvidenceSnapshot } from "../engine/evidence/adjudicate";
+import type { RunResponse } from "../engine/runEngine";
 
 const DEFAULT_DB_PATH = path.join(__dirname, "..", "cache", "signalforge.db");
 const SCHEMA_PATH = resolveSchemaPath();
@@ -32,6 +33,7 @@ export type RunRecord = {
   integrity_score: number;
   flags: string[];
   evidence?: EvidenceSnapshot;
+  response?: RunResponse;
 };
 
 export type ItemRecord = {
@@ -99,7 +101,7 @@ export function insertRun(run: RunRecord, items: ItemRecord[]): void {
     return;
   }
   const insertRunStmt = database.prepare(
-    "INSERT INTO runs (id, query, window_days, target, mode, created_at, integrity_score, flags, artifact_id, evidence_hash, evidence_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO runs (id, query, window_days, target, mode, created_at, integrity_score, flags, artifact_id, evidence_hash, evidence_json, response_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   );
   const insertItemStmt = database.prepare(
     "INSERT INTO items (run_id, title, url, snippet, published_at, source, cluster_id, idea_cluster_id, evidence_grade, origin_count, engagement, timestamp_tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -110,7 +112,8 @@ export function insertRun(run: RunRecord, items: ItemRecord[]): void {
     insertRunStmt.run(
       run.id, run.query, run.window_days, run.target, run.mode, run.created_at,
       run.integrity_score, flagsJoined, run.evidence?.artifact_id ?? null,
-      run.evidence?.evidence_hash ?? null, run.evidence ? JSON.stringify(run.evidence) : null
+      run.evidence?.evidence_hash ?? null, run.evidence ? JSON.stringify(run.evidence) : null,
+      run.response ? JSON.stringify(run.response) : null
     );
     for (const item of records) {
       insertItemStmt.run(
@@ -136,9 +139,18 @@ export function insertRun(run: RunRecord, items: ItemRecord[]): void {
 function ensureRunColumns(database: any): void {
   const columns = database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>;
   const names = new Set(columns.map((column) => column.name));
-  for (const name of ["artifact_id", "evidence_hash", "evidence_json"]) {
+  for (const name of ["artifact_id", "evidence_hash", "evidence_json", "response_json"]) {
     if (!names.has(name)) database.exec(`ALTER TABLE runs ADD COLUMN ${name} TEXT`);
   }
+}
+
+/** Replay the original history-dependent output; never recompute it under an existing ID. */
+export function getRunResponse(runId: string): RunResponse | null {
+  const row = getDb().prepare("SELECT response_json FROM runs WHERE id = ?").get(runId) as
+    { response_json: string | null } | undefined;
+  if (!row) return null;
+  if (!row.response_json) throw new Error("Stored run has no replay response; refusing to replace historical artifacts");
+  return JSON.parse(row.response_json) as RunResponse;
 }
 
 export function fetchBaselineItems(

@@ -117,12 +117,13 @@ function toArtifactRelativePath(artifactPath) {
   if (!artifactPath) {
     return "";
   }
-  const marker = `${"/"}runs${"/"}`;
-  const idx = artifactPath.lastIndexOf(marker);
+  const portablePath = artifactPath.replace(/\\/g, "/");
+  const marker = "/runs/";
+  const idx = portablePath.lastIndexOf(marker);
   if (idx === -1) {
-    return artifactPath.replace(/^\/+/, "");
+    return portablePath.replace(/^\/+/, "");
   }
-  return artifactPath.slice(idx + marker.length);
+  return portablePath.slice(idx + marker.length);
 }
 
 function extractPromptPack(contextBlockText) {

@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS runs (
   flags TEXT NOT NULL,
   artifact_id TEXT,
   evidence_hash TEXT,
-  evidence_json TEXT
+  evidence_json TEXT,
+  response_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS decisions (

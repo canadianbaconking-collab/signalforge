@@ -1,5 +1,13 @@
 # SignalForge project state — 2026-09-27
 
+## Review fixes — 2026-09-28
+
+New collection and review evidence uses schema 3. Source families are connected components of explicit originator and primary-URL links, including transitive dependence. Review rebuilds the components from raw provenance; removing a link can split a family. Hash-only legacy originator provenance is retained separately when a raw ID is unavailable. Schema-v1/v2 artifacts remain readable and are not rewritten.
+
+Ranking and integrity policy versions are now 3 so changed family semantics cannot reuse old run IDs. The additive SQLite `runs.response_json` migration stores the original run response with its metadata. Replaying identical fixed collector inputs/reference/options returns that persisted response before looking at newer history. Files are written exclusively and existing identical bytes may be reused; differing bytes under the same artifact path are rejected rather than overwritten. The UI normalizes Windows separators before requesting a relative artifact path.
+
+Regressions cover transitive/shared-source dependence, review splitting/rejoining, A–B–A replay across a database reopen, preservation of artifact bytes and modification times, old database migration, and Windows/POSIX artifact paths. Earlier completion notes below describe the versions shipped at those historical checkpoints.
+
 ## Purpose and boundary
 
 SignalForge is the general Frosted//Logic epistemic instrument. It helps decide what evidence deserves trust now, what to reject, and what to revisit. It is local-first and tool-for-self first. AlphaTrace may later consume its artifacts for market-specific weak-signal work; market prediction is not SignalForge's core.

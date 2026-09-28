@@ -15,6 +15,7 @@ import {
   BaselineItemRecord,
   fetchBaselineItems,
   getClusterHistory,
+  getRunResponse,
   insertRun,
   ItemRecord,
   RunRecord
@@ -69,8 +70,8 @@ const DEFAULT_TARGET: "gpt" | "codex" = "gpt";
 const DEFAULT_TOP_N = 10;
 const DEFAULT_ALLOW_T4 = true;
 const RUN_ID_HASH_LENGTH = 10;
-const RANKING_POLICY_VERSION = 2;
-const INTEGRITY_POLICY_VERSION = 2;
+const RANKING_POLICY_VERSION = 3;
+const INTEGRITY_POLICY_VERSION = 3;
 const DEFAULT_BASELINE_LOOKBACK_DAYS = 180;
 const DEFAULT_NOVELTY_WINDOW_DAYS = 30;
 const DEFAULT_NOVELTY_TARGET_RATIO = 0.25;
@@ -105,6 +106,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     applyAnnotations(collected, options.annotations), runDate, windowDays, collectorFlags, referenceAt
   );
   const runId = buildRunId(options, runDate, requestedSources, evidence.evidence_hash);
+  const saved = getRunResponse(runId);
+  if (saved) return saved;
   const referenceTime = Date.parse(evidence.reference_at);
   const windowFiltered = collected.filter((item) =>
     !item.published_at || isWithinWindow(item.published_at, windowDays, referenceTime)
@@ -205,10 +208,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
     evidence
   );
 
-  persistRun(runId, options, windowDays, target, mode, integrityScore, mergedFlags, ideaClustered, evidence);
-
   const runFileSuffix = runId.slice(-RUN_ID_HASH_LENGTH);
-  return {
+  const response: RunResponse = {
     run_id: runId,
     integrity_score: integrityScore,
     flags: mergedFlags,
@@ -231,6 +232,8 @@ export async function runEngine(options: RunOptions): Promise<RunResponse> {
       }
     }
   };
+  persistRun(runId, options, windowDays, target, mode, integrityScore, mergedFlags, ideaClustered, evidence, response);
+  return response;
 }
 
 async function collectSources(
@@ -398,11 +401,11 @@ function writeArtifacts(
     formatBaselineSummary(baselineSummary)
   ].join("\n");
 
-  fs.writeFileSync(path.join(runFolder, `context_block_${runFileSuffix}.txt`), contextBlockText, "utf8");
-  fs.writeFileSync(path.join(runFolder, `summary_${runFileSuffix}.md`), summary, "utf8");
-  fs.writeFileSync(path.join(runFolder, `sources_${runFileSuffix}.json`), JSON.stringify(artifactItems, null, 2), "utf8");
-  fs.writeFileSync(path.join(runFolder, `evidence_${runFileSuffix}.json`), JSON.stringify(evidence, null, 2), "utf8");
-  fs.writeFileSync(
+  writeImmutableArtifact(path.join(runFolder, `context_block_${runFileSuffix}.txt`), contextBlockText);
+  writeImmutableArtifact(path.join(runFolder, `summary_${runFileSuffix}.md`), summary);
+  writeImmutableArtifact(path.join(runFolder, `sources_${runFileSuffix}.json`), JSON.stringify(artifactItems, null, 2));
+  writeImmutableArtifact(path.join(runFolder, `evidence_${runFileSuffix}.json`), JSON.stringify(evidence, null, 2));
+  writeImmutableArtifact(
     path.join(runFolder, `run_${runFileSuffix}.json`),
     JSON.stringify({
       run_id: runId,
@@ -433,11 +436,20 @@ function writeArtifacts(
       reddit: {
         strategy_used: redditStrategyUsed
       }
-    }, null, 2),
-    "utf8"
+    }, null, 2)
   );
 
   return runFolder;
+}
+
+function writeImmutableArtifact(file: string, content: string): void {
+  try { fs.writeFileSync(file, content, { encoding: "utf8", flag: "wx" }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (fs.readFileSync(file, "utf8") !== content) {
+      throw new Error("Artifact already exists with different content; refusing to overwrite it");
+    }
+  }
 }
 
 function persistRun(
@@ -449,7 +461,8 @@ function persistRun(
   integrityScore: number,
   flags: string[],
   items: IdeaClusteredItem[],
-  evidence: EvidenceSnapshot
+  evidence: EvidenceSnapshot,
+  response: RunResponse
 ): void {
   const runRecord: RunRecord = {
     id: runId,
@@ -460,7 +473,8 @@ function persistRun(
     created_at: evidence.reference_at,
     integrity_score: integrityScore,
     flags,
-    evidence
+    evidence,
+    response
   };
 
   const itemRecords: ItemRecord[] = items.map((item) => ({
